@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Credentials and local configuration
+.env
+credentials
+*.key
+*.pem
+
+# Generated and downloaded data
+data/
+outputs/
+*.csv
+*.parquet
+*.tif
+*.tiff
+*.vrt
+*.gpkg
+*.gdb/
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.part
+
+# Local logs and task manifests
+*.log
+*_submitted_tasks.json
+*_tasks.json
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

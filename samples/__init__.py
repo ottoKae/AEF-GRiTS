@@ -1,0 +1,1 @@
+"""Deterministic point-registry builders."""

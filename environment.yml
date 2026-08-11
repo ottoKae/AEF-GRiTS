@@ -1,0 +1,22 @@
+name: aef_grits
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - affine
+  - earthengine-api
+  - gdal
+  - geopandas
+  - mgrs
+  - numpy
+  - pandas
+  - pyarrow
+  - pyproj
+  - pytest
+  - rasterio
+  - requests
+  - scikit-learn
+  - shapely>=2
+  - pip
+  - pip:
+      - -e .

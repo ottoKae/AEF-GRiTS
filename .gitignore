@@ -28,6 +28,7 @@ outputs/
 *.prj
 *.cpg
 *.part
+*.zarr/
 
 # Local logs and task manifests
 *.log

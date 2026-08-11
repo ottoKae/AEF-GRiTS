@@ -8,6 +8,16 @@ data/
 └── drive_exports/                  # optional manually downloaded files
 
 outputs/
+├── catalog.parquet                  # local Zarr tile index
+├── point_stream/
+│   ├── catalog.parquet              # point-shard index
+│   ├── run.json
+│   ├── report.json
+│   └── shards/part*.parquet
+├── <tile_id>/aef/zarr/
+│   ├── aef_<tile_id>_2017_2025.zarr/
+│   ├── aef_<tile_id>_2017_2025.zarr.progress.json
+│   └── aef_<tile_id>_2017_2025.zarr.report.json
 ├── plantation_inventory/
 │   ├── plantation_polygon_inventory.csv
 │   ├── plantation_polygon_aef_points_all.csv

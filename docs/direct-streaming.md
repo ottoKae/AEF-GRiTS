@@ -33,7 +33,7 @@ schema, coordinate, duplicate and year failures do not consume quota.
 ## Grid path
 
 ```text
-10 m grid provider (reference, Tessera 0.1-degree, or S1-GRiTS MGRS)
+10 m grid provider (reference, Tessera 0.1-degree, or packaged MGRS)
         ↓ 256 x 256 request windows
 ee.data.computePixels (64 float32 bands)
         ↓ NumPy structured array
@@ -60,7 +60,10 @@ shuffle occupied 17.9%-19.8% of raw float32 bytes and reduced storage by
 is therefore the inference product; point Parquet and bounded patches read from
 Zarr are the training and validation products.
 
-## Relationship to S1-GRiTS and GeoTessera
+## Architectural comparison (not runtime dependencies)
+
+S1-GRiTS and GeoTessera are listed only to explain design differences.
+AEF-GRiTS imports neither project and uses no files from either at runtime.
 
 | Property | S1-GRiTS | GeoTessera | AEF-GRiTS direct stream |
 |---|---|---|---|

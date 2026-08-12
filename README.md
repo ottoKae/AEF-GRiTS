@@ -3,7 +3,10 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 AEF-GRiTS is a standalone, reproducible workflow for sampling, exporting,
-downloading and validating annual AlphaEarth Foundation (AEF) embeddings.
+downloading and validating annual AlphaEarth Foundation (AEF) embeddings. It has
+no runtime or data-resource dependency on another source repository. The global
+MGRS grid index required by the commands is distributed inside this repository
+and its Python package.
 
 The workflow supports four download routes:
 
@@ -11,7 +14,7 @@ The workflow supports four download routes:
    and streamed to Parquet shards.
 2. **Reference grids**: one 10 m Zarr follows an arbitrary 10 m reference GeoTIFF.
 3. **Tessera 0.1-degree grids**: one 10 m UTM Zarr per Tessera-style small tile.
-4. **MGRS grids**: one 10 m Zarr per grid defined by the S1-GRiTS MGRS table.
+4. **MGRS grids**: one 10 m Zarr per grid defined by the packaged global MGRS table.
 
 Polygon sampling and unit-sphere prototype aggregation build on the point route.
 
@@ -23,13 +26,15 @@ The Earth Engine source is `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`, with bands
 ```text
 aef_grits/
 ├── features.py                     # AEF schema, QC and spherical operations
-├── catalog.py                      # S1-GRiTS catalog/grid helpers
+├── catalog.py                      # generic raster catalog/grid helpers
 ├── earth_engine.py                 # shared Earth Engine image builders
 ├── atomic.py                       # atomic JSON and Parquet writers
 ├── grids.py                        # fixed 10 m grid contracts and providers
 ├── points.py                       # table/vector conversion and preflight checks
 ├── point_store.py                  # validated point-shard loader
 ├── grid_lookup.py                  # AOI-to-MGRS/Tessera spatial lookup
+├── resources.py                    # packaged-data resolver
+├── data/mgrs.parquet               # built-in global MGRS grid table
 └── store.py                        # Zarr and multi-grid catalog reader
 samples/
 ├── aef_plantation_polygon_pixels.py
@@ -61,6 +66,21 @@ docs/
 Downloaded CSV, Parquet, GeoTIFF, VRT and Zarr products are ignored by Git. See
 [`docs/data-layout.md`](docs/data-layout.md) for the recommended local layout and
 the table contracts.
+
+### Standalone guarantee
+
+A fresh clone contains every project-owned runtime resource, including the
+19,002-row global MGRS table. Normal commands never inspect parent directories or
+hard-coded checkout paths. External services are limited to Earth Engine for the
+requested AEF pixels; user-supplied AOIs, point tables, reference rasters and
+optional catalogs are experiment inputs rather than source-repository dependencies.
+
+Verify the built-in resource after cloning or installing a wheel:
+
+```bash
+python -c "from aef_grits import mgrs_index_path; print(mgrs_index_path())"
+python scripts/stream_aef_grid_ee.py --help
+```
 
 ## Installation
 
@@ -272,8 +292,9 @@ For a plantation inventory, first create deterministic interior points:
 python samples/aef_plantation_polygon_pixels.py --shapefile /path/to/plantations.shp --out-dir outputs/plantation_inventory
 ```
 
-Optionally pass `--s1-catalog /path/to/catalog.parquet` to attach the containing
-S1-GRiTS grid. The principal point table is
+Optionally pass `--grid-catalog /path/to/catalog.parquet` to attach the containing
+grid from any compatible local raster catalog. This input is user data, not a
+dependency on another code repository. The principal point table is
 `outputs/plantation_inventory/plantation_polygon_aef_points_all.csv`.
 
 ### Stream point features
@@ -397,13 +418,17 @@ Or enumerate every 0.1-degree cell intersecting a WGS84 bounding box:
 python scripts/stream_aef_grid_ee.py --grid-scheme tessera_0p1 --bbox -80.0 -1.2 -79.7 -0.9 --out-dir outputs/tessera_0p1 --project YOUR_GEE_PROJECT --years 2025
 ```
 
-The MGRS provider reads the authoritative S1-GRiTS table. It uses `utm_epsg` and
+The MGRS provider reads the global table bundled at
+`aef_grits/data/mgrs.parquet`. It uses `utm_epsg` and
 `utm_wkt`, snaps the supplied projected bounds to the 10 m lattice and does not
 infer tile geometry from the tile name:
 
 ```bash
-python scripts/stream_aef_grid_ee.py --grid-scheme mgrs --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet --tiles 17MNT 17MNV 17MPT 17MPU 17MPV 17NQA --out-dir outputs/mgrs --catalog outputs/mgrs/catalog.parquet --project YOUR_GEE_PROJECT --years 2017 2018 2019 2020 2021 2022 2023 2024 2025
+python scripts/stream_aef_grid_ee.py --grid-scheme mgrs --tiles 17MNT 17MNV 17MPT 17MPU 17MPV 17NQA --out-dir outputs/mgrs --catalog outputs/mgrs/catalog.parquet --project YOUR_GEE_PROJECT --years 2017 2018 2019 2020 2021 2022 2023 2024 2025
 ```
+
+No external MGRS file is required. `--mgrs-index` and the
+`AEF_GRITS_MGRS_INDEX` environment variable are optional expert overrides only.
 
 #### Convert an AOI to grid IDs
 
@@ -412,7 +437,7 @@ uses the input's declared CRS, and returns both MGRS and Tessera 0.1-degree IDs.
 For polygon AOIs it selects all cells with a positive-area intersection; a grid
 that only touches the boundary is excluded by default. For point AOIs it returns
 only the cells containing those points. Tessera cells are non-overlapping and
-therefore deterministic for a point. S1-GRiTS MGRS coverage intentionally overlaps
+therefore deterministic for a point. The packaged buffered MGRS coverage overlaps
 near UTM-zone and tile margins, so one point may legitimately list more than one
 MGRS store; retain all for area coverage or choose the intended store explicitly
 when extracting a point.
@@ -422,7 +447,6 @@ python scripts/resolve_aef_grid_ids.py `
   --aoi data/provinces.gpkg --layer provinces `
   --region-id-field province_code `
   --name-field-cn province_cn --name-field-en province_en `
-  --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet `
   --out-dir outputs/grid_lookup/provinces
 ```
 
@@ -440,7 +464,6 @@ python scripts/search_aef_grid_catalog.py `
 
 $tiles = Get-Content outputs/grid_lookup/provinces/mgrs_grid_ids.txt
 python scripts/stream_aef_grid_ee.py --grid-scheme mgrs `
-  --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet `
   --tiles $tiles --out-dir outputs/mgrs --project YOUR_GEE_PROJECT --years 2025
 ```
 
@@ -472,7 +495,6 @@ Example first message to an agent:
 In AEF-GRiTS, resolve this AOI to both MGRS and Tessera 0.1-degree grids:
 AOI=D:/data/provinces.gpkg, layer=provinces,
 region ID=province_code, Chinese name=province_cn, English name=province_en.
-Use D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet.
 Write to outputs/grid_lookup/provinces and make the coverage quick-look.
 Report all counts and IDs, but do not download AEF yet.
 ```
@@ -632,7 +654,7 @@ training and validation, and `sample_patches()` for 3 x 3, 5 x 5 or 9 x 9 model
 inputs. This avoids maintaining duplicate patch files while preserving repeatable
 access to the exact source cube.
 
-The S1-GRiTS `utm_wkt` bounds for 17MPU produce a `10980 x 10980` grid at 10 m.
+The packaged `utm_wkt` bounds for 17MPU produce a `10980 x 10980` grid at 10 m.
 That is approximately 30.86 GB uncompressed for one year and 277.77 GB for nine
 years. The multi-tile pilot's 17.9%-19.8% ratios imply roughly 50-55 GB for this
 specific nine-year tile if its full data compress similarly, but only a complete
@@ -680,7 +702,7 @@ HTTP 429/timeouts, valid-pixel counts and final bytes on disk.
 Before any full tile, run one bounded live probe under both grid schemes:
 
 ```bash
-python scripts/smoke_test_aef_tiles.py --project YOUR_GEE_PROJECT --out-dir outputs/tile_smoke --year 2025 --probe-size 256 --tessera-tile -79.95 -1.05 --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet --mgrs-tile 17MPU
+python scripts/smoke_test_aef_tiles.py --project YOUR_GEE_PROJECT --out-dir outputs/tile_smoke --year 2025 --probe-size 256 --tessera-tile -79.95 -1.05 --mgrs-tile 17MPU
 ```
 
 This uses the real Tessera 0.1-degree and MGRS definitions but downloads only the

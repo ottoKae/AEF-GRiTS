@@ -12,6 +12,7 @@ import pandas as pd
 from pyproj import CRS, Transformer
 
 from .earth_engine import AEF_RESOLUTION_M
+from .resources import mgrs_index_path
 
 TESSERA_TILE_DEGREES = 0.1
 
@@ -231,14 +232,12 @@ class Tessera01GridProvider:
 
 
 class MGRSGridProvider:
-    """Build S1-GRiTS-compatible 10 m grids from its packaged MGRS table."""
+    """Build 10 m grids from the global MGRS table packaged with AEF-GRiTS."""
 
     REQUIRED_COLUMNS = {"mgrs_tile_id", "utm_epsg", "utm_wkt"}
 
-    def __init__(self, mgrs_parquet: str | Path):
-        self.path = Path(mgrs_parquet)
-        if not self.path.is_file():
-            raise FileNotFoundError(self.path)
+    def __init__(self, mgrs_parquet: str | Path | None = None):
+        self.path = mgrs_index_path(mgrs_parquet)
 
     def _rows(self, tile_ids: Sequence[str]) -> pd.DataFrame:
         requested = [str(tile).upper() for tile in tile_ids]

@@ -14,6 +14,7 @@ from shapely.geometry import box
 from shapely.ops import transform
 
 from .grids import tessera_grid_name, tessera_tile_from_world, utm_epsg_for_lonlat
+from .resources import mgrs_index_path
 
 
 VECTOR_SUFFIXES = {".shp", ".gpkg", ".geojson", ".json", ".parquet"}
@@ -111,9 +112,9 @@ def _has_positive_intersection(source, candidate, include_touching: bool) -> boo
     return True
 
 
-def load_mgrs_geographic_index(path: str | Path) -> gpd.GeoDataFrame:
-    """Load the authoritative S1-GRiTS MGRS table as WGS84 geometries."""
-    source = Path(path)
+def load_mgrs_geographic_index(path: str | Path | None = None) -> gpd.GeoDataFrame:
+    """Load the packaged AEF-GRiTS MGRS table as WGS84 geometries."""
+    source = mgrs_index_path(path)
     frame = pd.read_parquet(source)
     required = {"mgrs_tile_id", "utm_epsg", "utm_wkt"}
     missing = required.difference(frame.columns)
@@ -135,7 +136,7 @@ def load_mgrs_geographic_index(path: str | Path) -> gpd.GeoDataFrame:
 
 def resolve_mgrs(
     regions: Sequence[dict],
-    mgrs_index: str | Path,
+    mgrs_index: str | Path | None = None,
     *,
     include_touching: bool = False,
 ) -> list[dict]:

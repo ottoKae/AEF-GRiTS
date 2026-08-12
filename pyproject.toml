@@ -40,6 +40,9 @@ dev = ["pytest>=8"]
 [tool.setuptools.packages.find]
 include = ["aef_grits*"]
 
+[tool.setuptools.package-data]
+"aef_grits" = ["data/*.parquet", "data/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

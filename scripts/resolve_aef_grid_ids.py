@@ -23,16 +23,7 @@ from aef_grits.grid_lookup import (  # noqa: E402
     resolve_mgrs,
     resolve_tessera,
 )
-
-
-def _default_mgrs_index() -> Path | None:
-    configured = os.environ.get("AEF_GRITS_MGRS_INDEX")
-    candidates = [
-        Path(configured) if configured else None,
-        ROOT / "data" / "mgrs.parquet",
-        ROOT.parent / "S1-GRiTS" / "src" / "s1grits" / "data" / "mgrs.parquet",
-    ]
-    return next((path for path in candidates if path and path.is_file()), None)
+from aef_grits.resources import mgrs_index_path  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +36,11 @@ def parse_args() -> argparse.Namespace:
         choices=("mgrs", "tessera_0p1"),
         default=("mgrs", "tessera_0p1"),
     )
-    parser.add_argument("--mgrs-index", type=Path, default=_default_mgrs_index())
+    parser.add_argument(
+        "--mgrs-index",
+        type=Path,
+        help="Optional override; defaults to aef_grits/data/mgrs.parquet",
+    )
     parser.add_argument("--region-id-field")
     parser.add_argument("--name-field-cn")
     parser.add_argument("--name-field-en")
@@ -83,15 +78,11 @@ def main() -> None:
 
     rows: list[dict] = []
     if "mgrs" in args.schemes:
-        if args.mgrs_index is None or not args.mgrs_index.is_file():
-            raise FileNotFoundError(
-                "MGRS mode requires --mgrs-index, AEF_GRITS_MGRS_INDEX, or "
-                "the adjacent S1-GRiTS data/mgrs.parquet"
-            )
+        index_path = mgrs_index_path(args.mgrs_index)
         rows.extend(
             resolve_mgrs(
                 regions,
-                args.mgrs_index,
+                index_path,
                 include_touching=args.include_touching,
             )
         )
@@ -130,6 +121,11 @@ def main() -> None:
         {
             "source_aoi": str(args.aoi.resolve()),
             "source_crs": str(aoi.crs),
+            "mgrs_index": (
+                str(mgrs_index_path(args.mgrs_index))
+                if "mgrs" in args.schemes
+                else None
+            ),
             "region_count": len(regions),
             "include_touching": bool(args.include_touching),
             "grid_ids": by_scheme,

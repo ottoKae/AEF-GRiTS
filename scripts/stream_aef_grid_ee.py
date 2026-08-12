@@ -77,7 +77,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         metavar=("WEST", "SOUTH", "EAST", "NORTH"),
     )
-    parser.add_argument("--mgrs-index", type=Path)
+    parser.add_argument(
+        "--mgrs-index",
+        type=Path,
+        help="Optional override; defaults to the packaged global MGRS index",
+    )
     parser.add_argument("--tiles", nargs="+")
     parser.add_argument("--project", required=True)
     parser.add_argument("--years", nargs="+", type=int, default=list(range(2017, 2026)))
@@ -117,8 +121,6 @@ def resolve_grids(args: argparse.Namespace) -> list[GridSpec]:
         else:
             grids = provider.from_bbox(args.bbox)
     else:
-        if args.mgrs_index is None:
-            raise ValueError("mgrs mode requires --mgrs-index")
         tile_ids = list(args.tiles or ([] if args.tile_id is None else [args.tile_id]))
         grids = MGRSGridProvider(args.mgrs_index).get_many(tile_ids)
     ids = [grid.grid_id for grid in grids]

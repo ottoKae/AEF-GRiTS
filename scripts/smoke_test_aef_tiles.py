@@ -40,7 +40,11 @@ def parse_args() -> argparse.Namespace:
         default=(-79.95, -1.05),
         metavar=("LON", "LAT"),
     )
-    parser.add_argument("--mgrs-index", type=Path, required=True)
+    parser.add_argument(
+        "--mgrs-index",
+        type=Path,
+        help="Optional override; defaults to the packaged global MGRS index",
+    )
     parser.add_argument("--mgrs-tile", default="17MPU")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--max-retries", type=int, default=6)

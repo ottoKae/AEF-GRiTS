@@ -8,7 +8,7 @@ quick visualization. It does not authorize or perform a province-wide AEF downlo
 - AOI: one valid Anhui ADM1 polygon in WGS84.
 - Bounds: 115.000379–119.739997°E, 29.487235–34.732202°N.
 - Names/codes: `安徽省`, `Anhui Province`, `CN-AH`.
-- MGRS geometry: the authoritative S1-GRiTS `mgrs.parquet` table.
+- MGRS geometry: AEF-GRiTS's packaged `aef_grits/data/mgrs.parquet` table.
 - Selection: positive-area polygon intersection; boundary-only contact is excluded.
 - Administrative names are search aliases copied from AOI fields. Geometry, not a
   province name or an inferred MGRS code, determines membership.
@@ -26,7 +26,6 @@ python scripts/resolve_aef_grid_ids.py `
   --layer province `
   --region-id-field province_code `
   --name-field-cn province_cn --name-field-en province_en `
-  --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet `
   --out-dir outputs/grid_lookup/anhui_test/resolved_bilingual
 
 python scripts/visualize_aef_grid_lookup.py `

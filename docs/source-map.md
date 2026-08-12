@@ -2,6 +2,7 @@
 
 This repository was extracted from the production AEF workflow in
 `LL0912/DOCC_BALSA`. Project-specific imports and absolute local paths were removed.
+This is historical provenance only: AEF-GRiTS does not import or read that repository.
 
 | Current file | Former production file |
 |---|---|

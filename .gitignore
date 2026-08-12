@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .ruff_cache/
 .venv/
@@ -14,9 +16,12 @@ credentials
 
 # Generated and downloaded data
 data/
+!aef_grits/data/
+!aef_grits/data/README.md
 outputs/
 *.csv
 *.parquet
+!aef_grits/data/mgrs.parquet
 *.tif
 *.tiff
 *.vrt

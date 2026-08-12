@@ -52,8 +52,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--polylabel-tolerance-m", type=float, default=1.0)
     parser.add_argument("--tiles", nargs="+", default=list(DEFAULT_11_TILES))
     parser.add_argument(
-        "--s1-catalog", type=Path,
-        help="Optional onlyTK catalog; enables exact current-11-grid coverage assignment.",
+        "--grid-catalog",
+        "--s1-catalog",
+        dest="s1_catalog",
+        type=Path,
+        help=(
+            "Optional local raster catalog for exact point-to-grid assignment; "
+            "--s1-catalog is retained as a compatibility alias"
+        ),
     )
     return parser.parse_args()
 

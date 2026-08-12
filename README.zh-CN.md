@@ -2,14 +2,14 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-AEF-GRiTS 是一套独立且可复现的年度 AlphaEarth Foundation（AEF）嵌入特征采样、导出、下载与验证工作流。
+AEF-GRiTS 是一套独立且可复现的年度 AlphaEarth Foundation（AEF）嵌入特征采样、导出、下载与验证工作流。它在运行和数据资源上均不依赖其他源码仓库，命令所需的全球MGRS格网表已经随本仓库和Python包发布。
 
 本工作流支持四种下载方式：
 
 1. **点位特征**：读取表格或矢量样本，统一转换为WGS84点位并写入Parquet分片。
 2. **参考图格网**：按照任意10米参考 GeoTIFF 建立一个10米 Zarr。
 3. **Tessera 0.1°格网**：每个 Tessera 风格小瓦片建立一个10米 UTM Zarr。
-4. **MGRS格网**：按照 S1-GRiTS MGRS 表定义的格网，每个 MGRS 瓦片建立一个10米 Zarr。
+4. **MGRS格网**：按照包内全球MGRS表定义的格网，每个MGRS瓦片建立一个10米Zarr。
 
 地块内部采样和单位超球面地块原型聚合建立在点位下载路线之上。
 
@@ -20,13 +20,15 @@ Earth Engine 数据源为 `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`，波段为 `A0
 ```text
 aef_grits/
 ├── features.py                     # AEF 数据结构、质量控制与球面运算
-├── catalog.py                      # S1-GRiTS 数据目录与格网辅助工具
+├── catalog.py                      # 通用栅格目录与格网辅助工具
 ├── earth_engine.py                 # Earth Engine 影像构建工具
 ├── atomic.py                       # 原子化 JSON 与 Parquet 写入
 ├── grids.py                        # 统一10米格网及三个格网提供器
 ├── points.py                       # 表格/矢量转换与下载前预检
 ├── point_store.py                  # 点位分片统一验证加载器
 ├── grid_lookup.py                  # AOI与MGRS/Tessera空间检索
+├── resources.py                    # 包内资源解析器
+├── data/mgrs.parquet               # 内置全球MGRS格网表
 └── store.py                        # 本地 Zarr 与多瓦片目录读取器
 samples/
 ├── aef_plantation_polygon_pixels.py
@@ -56,6 +58,17 @@ docs/
 ```
 
 下载得到的 CSV、Parquet、GeoTIFF、VRT 和 Zarr 产品均被 Git 忽略。推荐的本地目录结构与表字段约定见 [`docs/data-layout.md`](docs/data-layout.md)。
+
+### 单仓库保证
+
+全新clone已经包含所有项目自有运行资源，包括19,002行全球MGRS格网表。普通命令不会扫描父目录，也没有指向本机其他源码仓库的硬编码路径。外部服务仅限按用户请求访问Earth Engine；用户提供的AOI、点表、参考栅格和可选catalog属于实验输入，不是源码仓库依赖。
+
+clone或安装wheel后可以这样验证内置资源：
+
+```bash
+python -c "from aef_grits import mgrs_index_path; print(mgrs_index_path())"
+python scripts/stream_aef_grid_ee.py --help
+```
 
 ## 安装
 
@@ -220,7 +233,7 @@ python scripts/prepare_aef_points.py --input data/plantations.shp --id-field pol
 python samples/aef_plantation_polygon_pixels.py --shapefile /path/to/plantations.shp --out-dir outputs/plantation_inventory
 ```
 
-可以通过 `--s1-catalog /path/to/catalog.parquet` 附加包含该点的 S1-GRiTS 格网信息。主要点表为：
+可以通过`--grid-catalog /path/to/catalog.parquet`附加任意兼容本地栅格目录中包含该点的格网信息；该参数读取的是用户数据，并不依赖其他代码仓库。主要点表为：
 
 ```text
 outputs/plantation_inventory/plantation_polygon_aef_points_all.csv
@@ -322,11 +335,14 @@ python scripts/stream_aef_grid_ee.py --grid-scheme tessera_0p1 --tessera-tile -7
 python scripts/stream_aef_grid_ee.py --grid-scheme tessera_0p1 --bbox -80.0 -1.2 -79.7 -0.9 --out-dir outputs/tessera_0p1 --project YOUR_GEE_PROJECT --years 2025
 ```
 
-MGRS 提供器读取 S1-GRiTS 的权威格网表，直接使用 `utm_epsg` 和 `utm_wkt`，并将投影边界对齐到10米格点，不根据瓦片名称推测空间范围：
+MGRS提供器直接读取随仓库发布的`aef_grits/data/mgrs.parquet`，使用其中的`utm_epsg`和`utm_wkt`，并将投影边界对齐到10米格点，不根据瓦片名称推测空间范围：
 
 ```bash
-python scripts/stream_aef_grid_ee.py --grid-scheme mgrs --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet --tiles 17MNT 17MNV 17MPT 17MPU 17MPV 17NQA --out-dir outputs/mgrs --catalog outputs/mgrs/catalog.parquet --project YOUR_GEE_PROJECT --years 2017 2018 2019 2020 2021 2022 2023 2024 2025
+python scripts/stream_aef_grid_ee.py --grid-scheme mgrs --tiles 17MNT 17MNV 17MPT 17MPU 17MPV 17NQA --out-dir outputs/mgrs --catalog outputs/mgrs/catalog.parquet --project YOUR_GEE_PROJECT --years 2017 2018 2019 2020 2021 2022 2023 2024 2025
 ```
+
+普通用户不需要提供外部MGRS文件。`--mgrs-index`和环境变量
+`AEF_GRITS_MGRS_INDEX`只用于专家显式覆盖内置资源。
 
 #### 将用户AOI转换为grid_id
 
@@ -334,7 +350,7 @@ python scripts/stream_aef_grid_ee.py --grid-scheme mgrs --mgrs-index D:/Project/
 根据输入文件声明的CRS自动转换，并同时生成MGRS和Tessera 0.1°编号。
 对于polygon，默认只保留与AOI具有正面积交集的格网，单纯接触边界的格网不会误选；
 对于点位文件，则只返回实际包含这些点的格网。Tessera单元互不重叠，因此一个点的
-归属是确定的；S1-GRiTS的MGRS覆盖在UTM分区和瓦片边缘有意保留重叠，一个点可能
+归属是确定的；包内MGRS覆盖在UTM分区和瓦片边缘有意保留重叠，一个点可能
 合理地对应多个MGRS Zarr。完整区域下载应保留全部相交格网；单点提取则应明确选择目标格网。
 
 ```powershell
@@ -342,7 +358,6 @@ python scripts/resolve_aef_grid_ids.py `
   --aoi data/provinces.gpkg --layer provinces `
   --region-id-field province_code `
   --name-field-cn province_cn --name-field-en province_en `
-  --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet `
   --out-dir outputs/grid_lookup/provinces
 ```
 
@@ -358,7 +373,6 @@ python scripts/search_aef_grid_catalog.py `
 
 $tiles = Get-Content outputs/grid_lookup/provinces/mgrs_grid_ids.txt
 python scripts/stream_aef_grid_ee.py --grid-scheme mgrs `
-  --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet `
   --tiles $tiles --out-dir outputs/mgrs --project YOUR_GEE_PROJECT --years 2025
 ```
 
@@ -388,7 +402,6 @@ python scripts/visualize_aef_grid_lookup.py `
 请在AEF-GRiTS中把以下AOI解析为MGRS和Tessera 0.1°格网：
 AOI=D:/data/provinces.gpkg，layer=provinces，
 行政区编号字段=province_code，中文名字段=province_cn，英文名字段=province_en。
-MGRS索引使用D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet。
 输出到outputs/grid_lookup/provinces，并生成覆盖核查图。
 请报告全部数量和grid_id，但暂时不要下载AEF。
 ```
@@ -499,7 +512,7 @@ python scripts/extract_aef_patches.py --samples data/model_points.parquet --cata
 
 完整MGRS瓦片Zarr用于逐像元推理；点位Parquet用于pixel或中心点训练与空间独立验证；3×3、5×5、9×9训练输入通过 `sample_patches()` 从权威Zarr按需读取，默认不再复制一套完整patch数据。
 
-S1-GRiTS `utm_wkt` 中的 17MPU 边界在10米分辨率下形成 `10980 x 10980` 格网。单年未压缩数据约为30.86 GB，九年约为277.77 GB。按本次多瓦片试验的17.9%—19.8%压缩率外推，这个特定九年瓦片约为50—55 GB，但最终大小仍必须由完整下载确认。因此，全国11瓦片稠密下载仍需要单独做出存储决策；如果训练只需要少量候选像元，应优先采用点位Parquet或从Zarr按需读取patch。
+包内`utm_wkt`中的17MPU边界在10米分辨率下形成`10980 x 10980`格网。单年未压缩数据约为30.86 GB，九年约为277.77 GB。按本次多瓦片试验的17.9%—19.8%压缩率外推，这个特定九年瓦片约为50—55 GB，但最终大小仍必须由完整下载确认。因此，全国11瓦片稠密下载仍需要单独做出存储决策；如果训练只需要少量候选像元，应优先采用点位Parquet或从Zarr按需读取patch。
 
 ### Chunk大小实测
 
@@ -519,7 +532,7 @@ S1-GRiTS `utm_wkt` 中的 17MPU 边界在10米分辨率下形成 `10980 x 10980`
 下载完整瓦片之前，先同时验证一个真实Tessera 0.1°格网和一个真实MGRS格网：
 
 ```powershell
-python scripts/smoke_test_aef_tiles.py --project YOUR_GEE_PROJECT --out-dir outputs/tile_smoke --year 2025 --probe-size 256 --tessera-tile -79.95 -1.05 --mgrs-index D:/Project/claude-demo/S1-GRiTS/src/s1grits/data/mgrs.parquet --mgrs-tile 17MPU
+python scripts/smoke_test_aef_tiles.py --project YOUR_GEE_PROJECT --out-dir outputs/tile_smoke --year 2025 --probe-size 256 --tessera-tile -79.95 -1.05 --mgrs-tile 17MPU
 ```
 
 该命令使用真实的Tessera和MGRS格网定义，但各自只下载中心`256×256`数据块，用于验证CRS、仿射变换、格网编号、64维完整性、catalog登记和默认无损压缩，不会把一次冒烟测试误变成完整MGRS瓦片下载。

@@ -1,0 +1,26 @@
+{
+  "created_utc": "2026-08-11T16:09:48+00:00",
+  "intersections": 1505,
+  "mgrs_grids": 28,
+  "tessera_0p1_grids": 1477,
+  "aoi_bounds_wgs84": [
+    115.000378731094,
+    29.4872345233546,
+    119.739997318422,
+    34.7322018383442
+  ],
+  "mgrs_bounds_wgs84": [
+    114.826219939517,
+    28.8223311058737,
+    120.330097077173,
+    35.2430777118033
+  ],
+  "tessera_0p1_bounds_wgs84": [
+    115.0,
+    29.4,
+    119.8,
+    34.8
+  ],
+  "png": "docs\\assets\\anhui_grid_coverage_quicklook.png",
+  "svg": "docs\\assets\\anhui_grid_coverage_quicklook.svg"
+}

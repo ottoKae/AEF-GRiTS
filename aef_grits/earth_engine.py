@@ -7,6 +7,9 @@ from collections.abc import Sequence
 
 DATASET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 AEF_BANDS = tuple(f"A{index:02d}" for index in range(64))
+AEF_RESOLUTION_M = 10.0
+AEF_FIRST_YEAR = 2017
+AEF_LAST_YEAR = 2025
 HIGH_VOLUME_URL = "https://earthengine-highvolume.googleapis.com"
 
 

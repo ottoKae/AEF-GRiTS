@@ -2,10 +2,9 @@
 """Submit annual AEF rasters on an exact user-provided reference grid.
 
 The exporter keeps the 64 ``A00``-``A63`` float bands and uses the reference
-GeoTIFF CRS, affine transform, bounds, width, and height.  This makes the
-downloaded rasters directly compatible with the phase-2 nearest-neighbour
-alignment code while avoiding an unnecessary 10 m export for a 30 m stage-1
-map.
+GeoTIFF CRS, affine transform, bounds, width, and height. AEF-GRiTS requires
+the reference to use the native 10 m output contract; coarser comparisons are
+separate downstream products.
 """
 
 from __future__ import annotations
@@ -13,9 +12,15 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import ee
-import rasterio
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from aef_grits.grids import AEF_RESOLUTION_M, ReferenceGridProvider
 
 
 AEF_ASSET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
@@ -48,28 +53,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def reference_grid(path: Path) -> dict:
-    with rasterio.open(path) as src:
-        transform = src.transform
-        if src.crs is None:
-            raise ValueError(f"reference raster has no CRS: {path}")
-        if transform.b != 0 or transform.d != 0:
-            raise ValueError("rotated/sheared reference grids are not supported")
-        return {
-            "path": str(path.resolve()),
-            "crs": str(src.crs),
-            "width": int(src.width),
-            "height": int(src.height),
-            "bounds": [float(value) for value in src.bounds],
-            "crs_transform": [
-                float(transform.a),
-                float(transform.b),
-                float(transform.c),
-                float(transform.d),
-                float(transform.e),
-                float(transform.f),
-            ],
-            "pixels": int(src.width * src.height),
-        }
+    spec = ReferenceGridProvider(path, path.stem).get()
+    return {
+        "path": str(path.resolve()),
+        "crs": spec.crs,
+        "width": spec.width,
+        "height": spec.height,
+        "bounds": list(spec.bounds),
+        "crs_transform": [float(value) for value in list(spec.transform)[:6]],
+        "pixels": spec.width * spec.height,
+        "resolution_m": AEF_RESOLUTION_M,
+    }
 
 
 def existing_descriptions() -> set[str]:
@@ -132,7 +126,7 @@ def main() -> None:
     known = existing_descriptions()
     submitted = []
     for year in years:
-        description = f"{args.prefix}_{year}_64band_30m"
+        description = f"{args.prefix}_{year}_64band_10m"
         if description in known and not args.allow_existing:
             raise RuntimeError(
                 f"Earth Engine already has an operation named {description}; "

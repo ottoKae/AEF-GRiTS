@@ -20,10 +20,9 @@ import time
 
 import numpy as np
 import pandas as pd
-import rasterio
 from rasterio.transform import Affine
 import zarr
-from zarr.codecs import BloscCodec
+from zarr.codecs import BloscCodec, BloscShuffle
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,23 +31,59 @@ if str(ROOT) not in sys.path:
 
 from aef_grits.atomic import write_json, write_parquet  # noqa: E402
 from aef_grits.earth_engine import AEF_BANDS, DATASET, annual_image, initialize  # noqa: E402
+from aef_grits.grids import (  # noqa: E402
+    AEF_RESOLUTION_M,
+    GridSpec,
+    MGRSGridProvider,
+    ReferenceGridProvider,
+    Tessera01GridProvider,
+)
 
 
 NODATA = -9999.0
 BYTES_PER_VALUE = 4
 COMPUTE_PIXELS_LIMIT = 48_000_000
+COMPRESSION_CNAME = "zstd"
+COMPRESSION_LEVEL = 7
+COMPRESSION_SHUFFLE = "noshuffle"
+COMPRESSION_TYPESIZE = 4
+COMPRESSION_PROTOCOL_VERSION = 2
+DEFAULT_INNER_CHUNK = 64
+DEFAULT_SHARD_SIZE = 512
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reference", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--tile-id", required=True)
+    parser.add_argument(
+        "--grid-scheme",
+        choices=("reference", "tessera_0p1", "mgrs"),
+        default="reference",
+    )
+    parser.add_argument("--reference", type=Path)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--out-dir", type=Path)
+    parser.add_argument("--tile-id")
+    parser.add_argument(
+        "--tessera-tile",
+        nargs=2,
+        type=float,
+        action="append",
+        metavar=("LON", "LAT"),
+        help="Tessera 0.1-degree tile centre; may be repeated",
+    )
+    parser.add_argument(
+        "--bbox",
+        nargs=4,
+        type=float,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+    )
+    parser.add_argument("--mgrs-index", type=Path)
+    parser.add_argument("--tiles", nargs="+")
     parser.add_argument("--project", required=True)
     parser.add_argument("--years", nargs="+", type=int, default=list(range(2017, 2026)))
     parser.add_argument("--block-size", type=int, default=256)
-    parser.add_argument("--inner-chunk", type=int, default=32)
-    parser.add_argument("--shard-size", type=int, default=512)
+    parser.add_argument("--inner-chunk", type=int, default=DEFAULT_INNER_CHUNK)
+    parser.add_argument("--shard-size", type=int, default=DEFAULT_SHARD_SIZE)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--max-retries", type=int, default=6)
     parser.add_argument("--checkpoint-every", type=int, default=8)
@@ -58,19 +93,54 @@ def parse_args() -> argparse.Namespace:
 
 
 def reference_grid(path: Path) -> dict:
-    with rasterio.open(path) as source:
-        if source.crs is None:
-            raise ValueError(f"Reference has no CRS: {path}")
-        transform = source.transform
-        if not math.isclose(transform.b, 0.0) or not math.isclose(transform.d, 0.0):
-            raise ValueError("Rotated or sheared reference grids are not supported")
-        return {
-            "crs": str(source.crs),
-            "transform": transform,
-            "width": int(source.width),
-            "height": int(source.height),
-            "bounds": tuple(float(value) for value in source.bounds),
-        }
+    """Backward-compatible helper returning a validated 10 m reference grid."""
+    return ReferenceGridProvider(path, path.stem).get().as_dict()
+
+
+def resolve_grids(args: argparse.Namespace) -> list[GridSpec]:
+    """Resolve command-line selection into one or more authoritative grids."""
+    if args.grid_scheme == "reference":
+        if args.reference is None or not args.tile_id:
+            raise ValueError("reference mode requires --reference and --tile-id")
+        grids = [ReferenceGridProvider(args.reference, args.tile_id).get()]
+    elif args.grid_scheme == "tessera_0p1":
+        provider = Tessera01GridProvider()
+        if bool(args.tessera_tile) == bool(args.bbox):
+            raise ValueError(
+                "tessera_0p1 mode requires exactly one of --tessera-tile or --bbox"
+            )
+        if args.tessera_tile:
+            grids = [
+                provider.get(lon, lat, coordinates_are_centres=True)
+                for lon, lat in args.tessera_tile
+            ]
+        else:
+            grids = provider.from_bbox(args.bbox)
+    else:
+        if args.mgrs_index is None:
+            raise ValueError("mgrs mode requires --mgrs-index")
+        tile_ids = list(args.tiles or ([] if args.tile_id is None else [args.tile_id]))
+        grids = MGRSGridProvider(args.mgrs_index).get_many(tile_ids)
+    ids = [grid.grid_id for grid in grids]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"Duplicate grid IDs requested: {ids}")
+    return grids
+
+
+def output_paths(
+    grids: list[GridSpec], years: list[int], out: Path | None, out_dir: Path | None
+) -> dict[str, Path]:
+    if len(grids) == 1 and out is not None:
+        return {grids[0].grid_id: out}
+    if out is not None:
+        raise ValueError("--out is only valid for one grid; use --out-dir")
+    if out_dir is None:
+        raise ValueError("Select --out for one grid or --out-dir for one or more grids")
+    year_token = f"{min(years)}_{max(years)}"
+    return {
+        grid.grid_id: out_dir / grid.grid_id / f"aef_{grid.grid_id}_{year_token}.zarr"
+        for grid in grids
+    }
 
 
 def _signature(
@@ -84,6 +154,7 @@ def _signature(
 ) -> str:
     payload = {
         "dataset": DATASET,
+        "scheme": grid.get("scheme", "reference"),
         "tile_id": tile_id,
         "years": years,
         "crs": grid["crs"],
@@ -93,6 +164,13 @@ def _signature(
         "block_size": block_size,
         "inner_chunk": inner_chunk,
         "shard_size": shard_size,
+        "compression": {
+            "protocol_version": COMPRESSION_PROTOCOL_VERSION,
+            "codec": COMPRESSION_CNAME,
+            "level": COMPRESSION_LEVEL,
+            "shuffle": COMPRESSION_SHUFFLE,
+            "typesize": COMPRESSION_TYPESIZE,
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -174,7 +252,12 @@ def _create_store(
         return group
 
     group = zarr.open_group(str(path), mode="w", zarr_format=3)
-    compressor = BloscCodec(cname="zstd", clevel=3)
+    compressor = BloscCodec(
+        cname=COMPRESSION_CNAME,
+        clevel=COMPRESSION_LEVEL,
+        shuffle=BloscShuffle.noshuffle,
+        typesize=COMPRESSION_TYPESIZE,
+    )
     group.create_array(
         "embeddings",
         shape=(len(years), len(AEF_BANDS), grid["height"], grid["width"]),
@@ -212,9 +295,17 @@ def _create_store(
             "aef:signature": signature,
             "aef:asset": DATASET,
             "aef:download_method": "ee.data.computePixels",
+            "aef:grid_scheme": grid.get("scheme", "reference"),
+            "aef:resolution_m": AEF_RESOLUTION_M,
+            "aef:compression_protocol_version": COMPRESSION_PROTOCOL_VERSION,
+            "aef:compression_codec": COMPRESSION_CNAME,
+            "aef:compression_level": COMPRESSION_LEVEL,
+            "aef:compression_shuffle": COMPRESSION_SHUFFLE,
+            "aef:compression_typesize": COMPRESSION_TYPESIZE,
             "geoemb:model": "AlphaEarth Foundations",
             "geoemb:dimensions": len(AEF_BANDS),
             "tile_id": grid.get("tile_id"),
+            "grid_id": grid.get("grid_id", grid.get("tile_id")),
             "crs": grid["crs"],
             "transform": list(transform)[:6],
             "width": grid["width"],
@@ -229,7 +320,13 @@ def _create_store(
 def _save_catalog(path: Path, record: dict) -> None:
     if path.exists():
         catalog = pd.read_parquet(path)
-        if "tile_id" in catalog:
+        if {"scheme", "grid_id"}.issubset(catalog.columns):
+            keep = ~(
+                catalog.scheme.astype(str).eq(str(record["scheme"]))
+                & catalog.grid_id.astype(str).eq(str(record["grid_id"]))
+            )
+            catalog = catalog.loc[keep]
+        elif "tile_id" in catalog:
             catalog = catalog[catalog.tile_id.astype(str) != str(record["tile_id"])]
         catalog = pd.concat([catalog, pd.DataFrame([record])], ignore_index=True)
     else:
@@ -237,34 +334,25 @@ def _save_catalog(path: Path, record: dict) -> None:
     write_parquet(catalog, path)
 
 
-def main() -> None:
-    args = parse_args()
-    years = sorted(set(args.years))
-    if not years:
-        raise ValueError("At least one year is required")
-    for name in ("block_size", "inner_chunk", "shard_size", "workers", "checkpoint_every"):
-        if getattr(args, name) <= 0:
-            raise ValueError(f"{name} must be positive")
-    if args.shard_size % args.inner_chunk:
-        raise ValueError("shard-size must be divisible by inner-chunk")
+def _stream_one(
+    args: argparse.Namespace,
+    years: list[int],
+    grid_spec: GridSpec,
+    output: Path,
+    catalog_path: Path,
+    ee,
+) -> dict:
+    grid = grid_spec.as_dict()
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
-    if request_bytes > COMPUTE_PIXELS_LIMIT:
-        raise ValueError(
-            f"block-size={args.block_size} requests {request_bytes / 1e6:.1f} MB; "
-            "Earth Engine computePixels allows at most 48 MB uncompressed"
-        )
-
-    grid = reference_grid(args.reference)
-    grid["tile_id"] = args.tile_id
     signature = _signature(
         grid,
         years,
-        args.tile_id,
+        grid_spec.grid_id,
         block_size=args.block_size,
         inner_chunk=args.inner_chunk,
         shard_size=args.shard_size,
     )
-    progress_path = args.out.with_name(f"{args.out.name}.progress.json")
+    progress_path = output.with_name(f"{output.name}.progress.json")
     if progress_path.exists():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         if progress.get("signature") != signature:
@@ -273,7 +361,7 @@ def main() -> None:
         progress = {"signature": signature, "completed": []}
     completed = set(progress.get("completed", []))
     store = _create_store(
-        args.out,
+        output,
         grid,
         years,
         signature,
@@ -281,7 +369,6 @@ def main() -> None:
         args.shard_size,
     )
     target = store["embeddings"]
-    ee = initialize(args.project, high_volume=args.high_volume)
     xmin, ymin, xmax, ymax = grid["bounds"]
     bounds = ee.Geometry.Rectangle([xmin, ymin, xmax, ymax], proj=grid["crs"], geodesic=False)
     images = {
@@ -293,7 +380,8 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "tile_id": args.tile_id,
+                "scheme": grid_spec.scheme,
+                "grid_id": grid_spec.grid_id,
                 "shape": list(target.shape),
                 "zarr_chunks": list(target.chunks),
                 "zarr_shards": list(target.shards),
@@ -369,18 +457,27 @@ def main() -> None:
     if len(completed) != len(all_blocks):
         raise RuntimeError("Run ended before every block was committed")
 
-    zarr.consolidate_metadata(str(args.out))
-    catalog_path = args.catalog or args.out.parent / "catalog.parquet"
+    zarr.consolidate_metadata(str(output))
     record = {
-        "tile_id": args.tile_id,
+        "scheme": grid_spec.scheme,
+        "grid_id": grid_spec.grid_id,
+        "tile_id": grid_spec.grid_id,
         "product_type": "aef_annual",
-        "zarr_path": str(args.out.resolve()),
+        "zarr_path": str(output.resolve()),
         "crs": grid["crs"],
         "transform": json.dumps(list(grid["transform"])[:6]),
         "width": grid["width"],
         "height": grid["height"],
+        "bounds": json.dumps(list(grid["bounds"])),
+        "resolution_m": AEF_RESOLUTION_M,
+        "compression_protocol_version": COMPRESSION_PROTOCOL_VERSION,
+        "compression_codec": COMPRESSION_CNAME,
+        "compression_level": COMPRESSION_LEVEL,
+        "compression_shuffle": COMPRESSION_SHUFFLE,
+        "compression_typesize": COMPRESSION_TYPESIZE,
         "years": json.dumps(years),
         "bands": json.dumps(list(AEF_BANDS)),
+        "grid_metadata": json.dumps(grid.get("metadata", {}), sort_keys=True),
         "dtype": "float32",
         "status": "complete",
         "signature": signature,
@@ -394,8 +491,65 @@ def main() -> None:
         "catalog": str(catalog_path.resolve()),
         "progress": str(progress_path.resolve()),
     }
-    write_json(report, args.out.with_name(f"{args.out.name}.report.json"))
+    write_json(report, output.with_name(f"{output.name}.report.json"))
     print(json.dumps(report, indent=2))
+    return report
+
+
+def main() -> None:
+    args = parse_args()
+    years = sorted(set(args.years))
+    if not years:
+        raise ValueError("At least one year is required")
+    for name in ("block_size", "inner_chunk", "shard_size", "workers", "checkpoint_every"):
+        if getattr(args, name) <= 0:
+            raise ValueError(f"{name} must be positive")
+    if args.shard_size % args.inner_chunk:
+        raise ValueError("shard-size must be divisible by inner-chunk")
+    request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
+    if request_bytes > COMPUTE_PIXELS_LIMIT:
+        raise ValueError(
+            f"block-size={args.block_size} requests {request_bytes / 1e6:.1f} MB; "
+            "Earth Engine computePixels allows at most 48 MB uncompressed"
+        )
+
+    grids = resolve_grids(args)
+    outputs = output_paths(grids, years, args.out, args.out_dir)
+    catalog_path = args.catalog or (
+        args.out_dir / "catalog.parquet"
+        if args.out_dir is not None
+        else next(iter(outputs.values())).parent / "catalog.parquet"
+    )
+    ee = initialize(args.project, high_volume=args.high_volume)
+    reports = []
+    failures = []
+    for index, grid in enumerate(grids, 1):
+        print(f"Grid {index}/{len(grids)}: {grid.scheme}/{grid.grid_id}", flush=True)
+        try:
+            reports.append(
+                _stream_one(
+                    args,
+                    years,
+                    grid,
+                    outputs[grid.grid_id],
+                    catalog_path,
+                    ee,
+                )
+            )
+        except Exception as exc:
+            failures.append({"grid_id": grid.grid_id, "error": str(exc)})
+            print(f"Grid failed: {grid.grid_id}: {exc}", file=sys.stderr, flush=True)
+    summary = {
+        "scheme": args.grid_scheme,
+        "requested": len(grids),
+        "completed": len(reports),
+        "failed": failures,
+        "catalog": str(catalog_path.resolve()),
+    }
+    summary_root = args.out_dir or next(iter(outputs.values())).parent
+    write_json(summary, summary_root / "run_summary.json")
+    if failures:
+        raise RuntimeError(f"{len(failures)} of {len(grids)} grids failed")
 
 
 if __name__ == "__main__":

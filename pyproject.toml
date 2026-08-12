@@ -23,6 +23,7 @@ gee = [
 geo = [
   "affine>=2.4",
   "geopandas>=0.14",
+  "matplotlib>=3.7",
   "mgrs>=1.5",
   "pyproj>=3.6",
   "rasterio>=1.3",

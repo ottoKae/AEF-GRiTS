@@ -28,18 +28,37 @@ if str(ROOT) not in sys.path:
 
 from aef_grits.atomic import write_json, write_parquet  # noqa: E402
 from aef_grits.earth_engine import (  # noqa: E402
+    AEF_RESOLUTION_M,
     DATASET,
     feature_columns,
     initialize,
     multiyear_image,
 )
+from aef_grits.points import (  # noqa: E402
+    load_point_source,
+    raise_for_invalid_points,
+    validate_point_table,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--samples", type=Path, required=True)
-    parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--project", required=True)
+    parser.add_argument(
+        "--samples",
+        type=Path,
+        required=True,
+        help="CSV, Parquet, Shapefile, GeoPackage or GeoJSON sample source",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=ROOT / "outputs" / "point_stream",
+        help="Output directory (default: <repository>/outputs/point_stream)",
+    )
+    parser.add_argument(
+        "--project",
+        help="Earth Engine quota project (required unless --validate-only)",
+    )
     parser.add_argument("--years", nargs="+", type=int, default=list(range(2017, 2026)))
     parser.add_argument("--chunk-size", type=int, default=1_000)
     parser.add_argument("--page-size", type=int, default=1_000)
@@ -49,13 +68,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-retries", type=int, default=6)
     parser.add_argument("--high-volume", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--layer", help="GeoPackage layer name")
+    parser.add_argument("--id-field", help="Source field used to build sample_id")
+    parser.add_argument(
+        "--geometry-mode",
+        choices=("auto", "representative", "centroid", "interior_pixels"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--reference-grid",
+        type=Path,
+        help="GeoTIFF or AEF Zarr defining centres for interior_pixels",
+    )
+    parser.add_argument("--max-points", type=int, default=1_000_000)
     return parser.parse_args()
-
-
-def read_table(path: Path) -> pd.DataFrame:
-    if path.suffix.lower() == ".parquet":
-        return pd.read_parquet(path)
-    return pd.read_csv(path, low_memory=False)
 
 
 def _signature(frame: pd.DataFrame, years: list[int], args: argparse.Namespace) -> str:
@@ -202,24 +229,40 @@ def _complete_chunk(
 
 def main() -> None:
     args = parse_args()
-    if args.chunk_size <= 0 or args.page_size <= 0 or args.workers <= 0:
-        raise ValueError("chunk-size, page-size and workers must be positive")
+    if args.page_size <= 0 or args.workers <= 0 or args.max_retries < 0:
+        raise ValueError("page-size/workers must be positive and max-retries non-negative")
+    if not math.isclose(args.scale, AEF_RESOLUTION_M):
+        raise ValueError(
+            f"AEF point sampling is fixed at {AEF_RESOLUTION_M:g} m; "
+            f"received --scale {args.scale:g}"
+        )
     years = sorted(set(args.years))
-    frame = read_table(args.samples)
-    required = {"sample_id", "lon", "lat"}
-    missing = required.difference(frame.columns)
-    if missing:
-        raise ValueError(f"Sample table missing columns: {sorted(missing)}")
-    frame = frame.reset_index(drop=True)
-    frame["sample_id"] = frame.sample_id.astype(str)
-    if frame.sample_id.duplicated().any():
-        raise ValueError("sample_id must be unique")
-    coords = frame[["lon", "lat"]].apply(pd.to_numeric, errors="coerce")
-    if not np.isfinite(coords.to_numpy()).all():
-        raise ValueError("lon/lat must be finite")
-    frame[["lon", "lat"]] = coords
-
+    frame = load_point_source(
+        args.samples,
+        layer=args.layer,
+        geometry_mode=args.geometry_mode,
+        id_field=args.id_field,
+        reference_grid=args.reference_grid,
+        max_points=args.max_points,
+    )
+    frame, validation = validate_point_table(frame, years, chunk_size=args.chunk_size)
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    validation.update(
+        {
+            "source": str(args.samples.resolve()),
+            "output_directory": str(args.out_dir.resolve()),
+            "geometry_mode": args.geometry_mode,
+            "validate_only": bool(args.validate_only),
+        }
+    )
+    write_json(validation, args.out_dir / "validation_report.json")
+    print(json.dumps(validation, indent=2, ensure_ascii=False))
+    raise_for_invalid_points(validation)
+    if args.validate_only:
+        return
+    if not args.project:
+        raise ValueError("--project is required for an Earth Engine download")
+
     shard_dir = args.out_dir / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     columns = feature_columns(years)
@@ -238,6 +281,7 @@ def main() -> None:
             "samples": str(args.samples.resolve()),
             "sample_count": len(frame),
             "chunk_size": args.chunk_size,
+            "resolution_m": AEF_RESOLUTION_M,
             "feature_count": len(columns),
             "method": "ee.data.computeFeatures",
             "high_volume": args.high_volume,

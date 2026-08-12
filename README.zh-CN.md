@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-AEF-GRiTS 是一套独立且可复现的年度 AlphaEarth Foundation（AEF）嵌入特征采样、导出、下载与验证工作流。它从 `LL0912/DOCC_BALSA` 的生产级人工林制图流程中整理而来，现已不再依赖该仓库。
+AEF-GRiTS 是一套独立且可复现的年度 AlphaEarth Foundation（AEF）嵌入特征采样、导出、下载与验证工作流。
 
 本工作流支持四种下载方式：
 

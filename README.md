@@ -3,9 +3,7 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 AEF-GRiTS is a standalone, reproducible workflow for sampling, exporting,
-downloading and validating annual AlphaEarth Foundation (AEF) embeddings. It was
-extracted from the production plantation-mapping pipeline in `LL0912/DOCC_BALSA`
-and no longer depends on that repository.
+downloading and validating annual AlphaEarth Foundation (AEF) embeddings.
 
 The workflow supports four download routes:
 

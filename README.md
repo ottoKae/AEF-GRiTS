@@ -21,6 +21,17 @@ Data source: `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`, bands `A00`–`A63`.
 - Readers for points, windows, bounding boxes, and model-ready patches.
 - A packaged global MGRS index; no other source repository is required.
 
+## Output structure
+
+| Workflow | Main output | Supporting files |
+|---|---|---|
+| Points | Parquet shards | `catalog.parquet`, validation/report JSON |
+| Dense grid | one Zarr per grid ID | `catalog.parquet`, progress/report JSON |
+| Web task | the same products | task log, events, validation and provenance |
+
+Downloaded data, credentials, logs, task state, and local outputs are excluded
+from Git.
+
 ## Quick start
 
 Install Miniforge or Conda, clone the repository, and run:
@@ -150,17 +161,6 @@ python scripts/resolve_aef_grid_ids.py \
 ```
 
 The bundled `aef_grits/data/mgrs.parquet` is the authoritative MGRS geometry.
-
-## Output structure
-
-| Workflow | Main output | Supporting files |
-|---|---|---|
-| Points | Parquet shards | `catalog.parquet`, validation/report JSON |
-| Dense grid | one Zarr per grid ID | `catalog.parquet`, progress/report JSON |
-| Web task | the same products | task log, events, validation and provenance |
-
-Downloaded data, credentials, logs, task state, and local outputs are excluded
-from Git.
 
 ## Read local Zarr data
 

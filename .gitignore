@@ -39,6 +39,9 @@ outputs/
 *.log
 *_submitted_tasks.json
 *_tasks.json
+webapp/runs/
+webapp/output/
+webapp/server.pid
 
 # IDE and OS
 .idea/

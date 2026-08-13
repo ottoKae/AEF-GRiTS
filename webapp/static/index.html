@@ -1,0 +1,1953 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEF-GRiTS 嵌入式特征数据下载工具</title>
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<style>
+/* ── Variables ── */
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #21253a;
+  --border: #2d3348;
+  --accent: #4d8ef7;
+  --accent2: #9b59ff;
+  --text: #e8eaf0;
+  --text-sec: #7a8099;
+  --font: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+
+/* ── Layout ── */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+}
+#header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 100;
+}
+#header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.header-tag {
+  font-size: 13px;
+  padding: 4px 9px;
+  border-radius: 4px;
+  background: rgba(77,142,247,.18);
+  color: var(--accent);
+  border: 1px solid rgba(77,142,247,.3);
+}
+#header .spacer { flex: 1; }
+#header a { font-size: 12px; color: var(--text-sec); text-decoration: none; }
+#header a:hover { color: var(--accent); }
+
+#main { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+#workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Sidebar ── */
+#sidebar {
+  width: 380px;
+  min-width: 340px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+#sidebar-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-sec);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 6px;
+}
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label {
+  font-size: 14px;
+  color: var(--text-sec);
+}
+input[type="text"], input[type="number"], select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 10px 11px;
+  font-size: 14px;
+  width: 100%;
+  transition: border-color .15s;
+  font-family: inherit;
+}
+input:focus { outline: none; border-color: var(--accent); }
+input:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Output dir with browse */
+.output-row { display: flex; gap: 6px; align-items: stretch; }
+.output-row input { flex: 1; min-width: 0; }
+.btn-browse {
+  flex-shrink: 0;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text-sec);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.btn-browse:hover { border-color: var(--accent); color: var(--accent); }
+
+/* AOI box */
+.aoi-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.aoi-hint {
+  font-size: 12px;
+  color: var(--text-sec);
+  text-align: center;
+  padding: 6px 0;
+}
+.aoi-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-aoi {
+  flex: 1;
+  min-width: 90px;
+  padding: 10px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all .15s;
+}
+.btn-aoi:hover { border-color: var(--accent); color: var(--accent); }
+.btn-aoi.active { background: rgba(77,142,247,.15); border-color: var(--accent); color: var(--accent); }
+
+.aoi-status {
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  display: none;
+}
+.aoi-status.empty { display: block; background: rgba(122,128,153,.12); color: var(--text-sec); }
+.aoi-status.ready { display: block; background: rgba(77,142,247,.15); color: var(--accent); }
+
+.aoi-import {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aoi-import-label {
+  font-size: 13px;
+  color: var(--text-sec);
+}
+.aoi-import-btn {
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all .15s;
+}
+.aoi-import-btn:hover { border-color: var(--accent); color: var(--accent); }
+.aoi-import-name {
+  font-size: 12px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+/* Bbox grid */
+.bbox-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.bbox-grid label { font-size: 10px; color: var(--text-sec); margin-bottom: 2px; display: block; }
+
+/* Year tags */
+.year-tags-scroll {
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 2px;
+}
+.year-tag {
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text-sec);
+  cursor: pointer;
+  transition: all .12s;
+  user-select: none;
+}
+.year-tag:hover { border-color: var(--accent); color: var(--accent); }
+.year-tag.active { background: rgba(77,142,247,.2); border-color: var(--accent); color: var(--accent); font-weight: 500; }
+#year-all-wrap { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+#year-all-wrap label { font-size: 13px; color: var(--text); cursor: pointer; }
+
+/* Workflow tabs */
+.workflow-tabs {
+  display: flex;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.wf-tab {
+  flex: 1;
+  padding: 12px 8px;
+  border: none;
+  background: none;
+  color: var(--text-sec);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all .15s;
+}
+.wf-tab + .wf-tab { border-left: 1px solid var(--border); }
+.wf-tab:hover { color: var(--text); }
+.wf-tab.active { background: rgba(77,142,247,.15); color: var(--accent); font-weight: 500; }
+
+/* Submit */
+#btn-submit, #simple-btn-submit {
+  width: 100%;
+  padding: 13px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+#btn-submit:hover:not(:disabled), #simple-btn-submit:hover:not(:disabled) { background: #3d7de8; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(77,142,247,.35); }
+#btn-submit:disabled, #simple-btn-submit:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
+.submit-note {
+  font-size: 12px;
+  color: var(--text-sec);
+  text-align: center;
+  margin-top: 4px;
+}
+
+.step-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(33,37,58,.45);
+}
+.step-title { font-size: 15px; font-weight: 650; margin-bottom: 9px; }
+.step-number {
+  display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;
+  margin-right:7px;border-radius:50%;background:var(--accent);color:white;font-size:12px;
+}
+.input-help { margin-top:6px;color:var(--text-sec);font-size:12px;line-height:1.45; }
+.file-status { margin-top:7px;color:var(--accent);font-size:13px;word-break:break-word; }
+.native-file-hidden { display:none; }
+.file-picker-tile {
+  width:100%;min-height:86px;padding:10px 12px;border:1px solid var(--border);
+  border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+  font-family:inherit;transition:all .15s;text-align:center;
+}
+.file-picker-tile:hover { border-color:var(--accent);background:rgba(77,142,247,.1); }
+.file-picker-icon { display:block;font-size:23px;line-height:1; }
+.file-picker-label { display:block;font-size:14px;font-weight:600;white-space:nowrap; }
+.file-picker-detail { display:block;width:100%;font-size:12px;color:var(--text-sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.aoi-btns .btn-aoi.picker-vertical {
+  min-width:0;min-height:78px;flex-direction:column;gap:7px;white-space:nowrap;
+}
+.aoi-btns .btn-aoi.picker-vertical .file-picker-icon { font-size:22px; }
+.output-picker-row { display:flex;align-items:stretch;gap:7px; }
+.output-picker-row .file-picker-tile { min-height:78px;flex:1;min-width:0; }
+.output-clear-btn { width:58px;flex:0 0 58px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text-sec);cursor:pointer;font-family:inherit;font-size:12px; }
+.output-clear-btn:hover { border-color:var(--accent);color:var(--accent); }
+.directory-card { width:min(620px,95vw); }
+.directory-root { padding:9px 11px;border-radius:6px;background:var(--surface2);color:var(--text-sec);font-size:12px;word-break:break-all;margin-bottom:8px; }
+.directory-current { color:var(--text);font-size:14px;font-weight:600;margin:8px 0;word-break:break-all; }
+.directory-list { border:1px solid var(--border);border-radius:7px;max-height:320px;overflow-y:auto; }
+.directory-item { width:100%;padding:10px 12px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text);font:14px var(--font);text-align:left;cursor:pointer;display:flex;gap:9px;align-items:center; }
+.directory-item:last-child { border-bottom:0; }
+.directory-item:hover { background:rgba(77,142,247,.12);color:var(--accent); }
+.directory-empty { padding:24px;text-align:center;color:var(--text-sec);font-size:13px; }
+.directory-actions { display:flex;gap:8px;margin-top:12px; }
+.directory-actions button { flex:1;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);cursor:pointer;font-family:inherit; }
+.directory-actions button.primary { background:var(--accent);border-color:var(--accent);color:#fff; }
+.directory-create { display:flex;gap:8px;margin-top:10px; }
+.directory-create input { flex:1; }
+.directory-create button { padding:0 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);cursor:pointer; }
+.compact-hidden { display:none !important; }
+.legacy-form { display:none !important; }
+
+/* ── Map ── */
+#map-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #1a2030;
+}
+#map { width: 100%; height: 100%; background: #1a2030; }
+
+/* Map loading overlay */
+#map-loading {
+  position: absolute;
+  inset: 0;
+  background: #1a2030;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  gap: 12px;
+  transition: opacity .4s;
+}
+#map-loading.hidden { opacity: 0; pointer-events: none; }
+.map-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid rgba(77,142,247,.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#map-loading p { font-size: 13px; color: var(--text-sec); }
+#map-loading.error p { color: #e07070; }
+
+/* Map error banner */
+#map-error-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30,33,45,.92);
+  border: 1px solid rgba(77,142,247,.4);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--text-sec);
+  z-index: 50;
+  display: none;
+  text-align: center;
+  max-width: 340px;
+  backdrop-filter: blur(8px);
+}
+#map-error-banner.visible { display: block; }
+#map-error-banner strong { color: var(--text); }
+
+/* Map toolbar */
+#map-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.map-tool-btn {
+  width: 38px; height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 17px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+  position: relative;
+  box-shadow: 0 2px 10px rgba(0,0,0,.45);
+}
+.map-tool-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--surface2); }
+.map-tool-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 2px 14px rgba(77,142,247,.5); }
+.map-tool-btn[title]::after {
+  content: attr(title);
+  position: absolute;
+  right: 44px;
+  background: rgba(26,29,39,.92);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+  backdrop-filter: blur(8px);
+}
+.map-tool-btn[title]:hover::after { opacity: 1; }
+
+/* Base map selector (vector / imagery / grid-only) */
+#basemap-menu {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 1001;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+  min-width: 132px;
+}
+#basemap-menu.visible { display: flex; }
+.basemap-item {
+  font-size: 12px;
+  color: var(--text-sec);
+  padding: 7px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all .12s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.basemap-item:hover { background: rgba(77,142,247,.15); color: var(--text); }
+.basemap-item.active { background: rgba(77,142,247,.22); color: var(--accent); }
+.basemap-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); opacity: 0; }
+.basemap-item.active .dot { opacity: 1; }
+
+/* Draw banner */
+#draw-banner {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  background: rgba(26,29,39,.92);
+  border: 1px solid var(--accent);
+  border-radius: 20px;
+  padding: 8px 20px;
+  font-size: 13px;
+  color: var(--accent);
+  display: none;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 20px rgba(77,142,247,.3);
+  animation: pulse 2s infinite;
+  backdrop-filter: blur(8px);
+}
+#draw-banner.visible { display: flex; }
+#grid-legend { position:absolute;right:16px;bottom:20px;z-index:900;background:rgba(15,17,23,.9);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:11px;color:var(--text-sec);display:none; }
+#grid-legend.visible { display:block; }
+.legend-line { display:inline-block;width:20px;border-top:2px dashed #f1c40f;margin-right:6px;vertical-align:middle; }
+@keyframes pulse {
+  0%,100% { box-shadow: 0 4px 20px rgba(77,142,247,.3); }
+  50% { box-shadow: 0 4px 28px rgba(77,142,247,.55); }
+}
+
+/* Task panel */
+#task-panel {
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  height: 310px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#task-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#task-panel-header h2 { font-size: 15px; font-weight: 650; flex: 1; color: var(--text); }
+.task-panel-btns { display: flex; gap: 6px; }
+.icon-btn {
+  width: 24px; height: 24px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-sec);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  transition: all .12s;
+}
+.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+#task-panel-body { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 10px 18px 14px; display: flex; flex-direction: row; align-items: stretch; gap: 12px; scroll-behavior: smooth; }
+.task-empty { min-width:100%; font-size: 14px; color: var(--text-sec); text-align: center; padding: 52px 0; }
+.task-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 380px;
+  min-width: 380px;
+  max-width: 380px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.task-card > * { flex-shrink: 0; }
+.task-card-title { font-size: 14px; font-weight: 650; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.task-card-meta { font-size: 13px; line-height: 1.35; color: var(--text-sec); overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.task-card-meta strong { color: var(--text); font-weight: 550; }
+.task-card-path { white-space:normal;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+.task-card-log {
+  font-size: 12px;
+  color: var(--text-sec);
+  background: rgba(0,0,0,.2);
+  border-radius: 4px;
+  padding: 4px 6px;
+  max-height: 85px;
+  overflow-y: auto;
+  font-family: 'Consolas', monospace;
+  white-space: pre-wrap;
+  display: none;
+}
+.task-card-log.shown { display: block; }
+.task-status { font-size: 12px; padding: 3px 8px; border-radius: 10px; font-weight: 600; }
+.task-status.pending { background: rgba(155,89,255,.15); color: #9b59ff; }
+.task-status.queued { background: rgba(155,89,255,.15); color: #9b59ff; }
+.task-status.running { background: rgba(77,142,247,.15); color: var(--accent); }
+.task-status.validating_output { background: rgba(52,211,153,.15); color: #34d399; }
+.task-status.done { background: rgba(46,204,113,.15); color: #2ecc71; }
+.task-status.error, .task-status.failed, .task-status.interrupted { background: rgba(231,76,60,.15); color: #e74c3c; }
+.task-status.cancelled, .task-status.cancelling { background: rgba(241,196,15,.15); color: #f1c40f; }
+.task-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.task-action-btn {
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-sec);
+  cursor: pointer;
+  transition: all .12s;
+}
+.task-action-btn:hover { border-color: var(--accent); color: var(--accent); }
+.task-action-btn.danger:hover { border-color: #e74c3c; color: #e74c3c; }
+
+/* Progress bar */
+.task-progress {
+  height: 6px;
+  background: rgba(0,0,0,.3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+.task-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  border-radius: 3px;
+  transition: width .4s ease;
+}
+.task-progress-bar.indeterminate {
+  width: 35% !important;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: indet 1.2s linear infinite;
+}
+@keyframes indet {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+.task-progress-text {
+  font-size: 12px;
+  color: var(--text-sec);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.task-validation.ok { color:#2ecc71; }
+.task-validation.failed { color:#e74c3c; }
+.modal-backdrop { position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:3000;display:none;align-items:center;justify-content:center;padding:30px; }
+.modal-backdrop.visible { display:flex; }
+.modal-card { width:min(900px,95vw);max-height:88vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px; }
+.modal-card-header { display:flex;align-items:center;gap:10px;margin-bottom:12px; }
+.modal-card-header h3 { flex:1;font-size:14px; }
+.modal-card pre { white-space:pre-wrap;word-break:break-word;font:11px/1.5 Consolas,monospace;color:var(--text-sec); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar:horizontal { height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── Leaflet dark theme overrides ── */
+.leaflet-container { background: #1a2030; font-family: var(--font); }
+.leaflet-bar a, .leaflet-control-zoom a {
+  background: rgba(26,29,39,.9);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.leaflet-bar a:hover { background: rgba(77,142,247,.25); color: var(--accent); }
+.leaflet-control-attribution {
+  background: rgba(26,29,39,.7) !important;
+  color: var(--text-sec) !important;
+  font-size: 10px;
+}
+.leaflet-control-attribution a { color: var(--accent) !important; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--text); }
+.aoi-vertex { background: var(--accent); border: 2px solid #fff; border-radius: 50%; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <h1>AEF-GRiTS</h1>
+    <span class="header-tag">嵌入式特征数据下载工具</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/ottoKae/AEF-GRiTS" target="_blank">GitHub</a>
+  </div>
+
+  <div id="main">
+
+    <!-- Sidebar -->
+    <div id="sidebar">
+      <div id="sidebar-scroll">
+
+        <div class="step-card">
+          <div class="step-title"><span class="step-number">1</span>选择下载目标</div>
+          <div class="workflow-tabs">
+            <button class="wf-tab active" id="simple-wf-point" onclick="setWorkflow('point')"><span>📍</span><span>点位</span></button>
+            <button class="wf-tab" id="simple-wf-grid" onclick="setWorkflow('grid')"><span>🗺</span><span>格网</span></button>
+          </div>
+        </div>
+
+        <div id="simple-point-options" class="step-card">
+          <div class="step-title"><span class="step-number">2</span>选择点位文件</div>
+          <div class="workflow-tabs">
+            <button class="wf-tab active" id="point-source-csv" onclick="setPointSourceType('csv')">CSV</button>
+            <button class="wf-tab" id="point-source-shp" onclick="setPointSourceType('shp')">Shapefile</button>
+          </div>
+          <button class="file-picker-tile" id="point-file-picker" type="button" style="margin-top:10px" onclick="document.getElementById('simple-point-files').click()">
+            <span class="file-picker-icon" id="point-picker-icon">📄</span>
+            <span class="file-picker-label" id="point-picker-label">选择 CSV 文件</span>
+            <span class="file-picker-detail" id="point-picker-detail">尚未选择文件</span>
+          </button>
+          <input class="native-file-hidden" type="file" id="simple-point-files" accept=".csv">
+          <div class="input-help" id="point-file-help">CSV 必须包含唯一 sample_id，以及 WGS84 的 lon、lat。</div>
+          <div class="file-status" id="point-file-status"></div>
+        </div>
+
+        <div id="simple-grid-options" class="step-card" style="display:none">
+          <div class="step-title"><span class="step-number">2</span>选择格网与空间范围</div>
+          <div class="workflow-tabs">
+            <button class="wf-tab active" id="scheme-mgrs" onclick="setGridScheme('mgrs')">MGRS</button>
+            <button class="wf-tab" id="scheme-tessera" onclick="setGridScheme('tessera_0p1')">Tessera 0.1°</button>
+          </div>
+          <div class="aoi-box" style="margin-top:10px">
+            <div id="simple-aoi-status" class="aoi-status empty">尚未设置空间范围</div>
+            <div class="aoi-btns">
+              <button class="btn-aoi picker-vertical" type="button" id="aoi-shapefile-picker" onclick="document.getElementById('aoi-files').click()"><span class="file-picker-icon">📂</span><span class="file-picker-label">Shapefile</span></button>
+              <button class="btn-aoi picker-vertical" id="btn-draw-simple" onclick="startDraw()"><span class="file-picker-icon">✏️</span><span class="file-picker-label">矢量绘制</span></button>
+              <button class="btn-aoi picker-vertical" onclick="clearAOI()"><span class="file-picker-icon">🗑️</span><span>清空范围</span></button>
+            </div>
+            <input type="file" id="aoi-files" multiple accept=".wkt,.zip,.shp,.shx,.dbf,.prj,.cpg" style="display:none" onchange="importAOIFiles(this)">
+            <div class="aoi-import-name" id="simple-vector-file-name"></div>
+            <div class="input-help">请选择完整Shapefile组件或上传ZIP，系统依据.prj自动识别坐标系并重投影。</div>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-title"><span class="step-number">3</span>选择年份与存储位置</div>
+          <div class="section-title">年份（可多选）</div>
+          <div class="year-tags-scroll" id="simple-year-tags"></div>
+          <div id="simple-year-all-wrap" style="display:flex;align-items:center;gap:8px;margin-top:7px">
+            <input type="checkbox" id="simple-year-all"><label for="simple-year-all" style="font-size:13px">全部年份</label>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label>存储子目录</label>
+            <div class="output-picker-row">
+              <button class="file-picker-tile" type="button" id="output-directory-picker" onclick="openOutputBrowser()">
+                <span class="file-picker-icon">📁</span>
+                <span class="file-picker-label">选择存储子目录</span>
+                <span class="file-picker-detail" id="output-picker-detail">未指定，任务将自动命名</span>
+              </button>
+              <button class="output-clear-btn" type="button" onclick="clearOutputDirectory()">自动<br>命名</button>
+            </div>
+            <input type="hidden" id="simple-output" value="">
+          </div>
+          <div class="input-help" id="output-root-hint">保存到 Web 服务的 output 目录；下载前会检查磁盘空间。</div>
+        </div>
+
+        <div>
+          <button id="simple-btn-submit" disabled onclick="submitTask()">⬇ 开始下载</button>
+          <div id="simple-plan-summary" style="display:none;margin-top:8px;font-size:13px;color:var(--text-sec);white-space:pre-wrap"></div>
+          <div id="simple-crs-summary" style="display:none;margin-top:6px;font-size:13px;color:var(--text-sec);white-space:pre-wrap"></div>
+          <p class="submit-note">系统先检查范围、CRS、数据量和磁盘，然后请您确认。</p>
+        </div>
+
+        <div class="legacy-form">
+
+        <!-- Project -->
+        <div>
+          <div class="section-title">项目配置</div>
+          <div class="field">
+            <label>Google Earth Engine 项目 ID *</label>
+            <input type="text" id="project" placeholder="例如：my-gcp-project">
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>输出子目录（位于服务端配置的 output 根目录内）</label>
+            <input type="text" id="output" placeholder="留空则按任务 ID 自动创建">
+          </div>
+        </div>
+
+        <!-- AOI -->
+        <div>
+          <div class="section-title">感兴趣区域（AOI）</div>
+          <div class="aoi-box">
+            <div id="aoi-status" class="aoi-status empty">请在地图上绘制/导入区域</div>
+            <div class="aoi-btns">
+              <button class="btn-aoi" id="btn-draw" onclick="startDraw()">✏️ 绘制多边形</button>
+              <button class="btn-aoi" onclick="clearAOI()">🗑 清空</button>
+            </div>
+            <div class="aoi-import">
+              <div class="aoi-import-label">导入WGS84 GeoJSON，或包含PRJ的完整Shapefile ZIP</div>
+              <button class="aoi-import-btn" type="button" onclick="document.getElementById('vector-file').click()">📂 导入研究区矢量</button>
+              <div class="aoi-import-name" id="vector-file-name"></div>
+              <input type="file" id="vector-file" accept=".geojson,.json,.zip" style="display:none" onchange="importVectorFile(this)">
+            </div>
+            <div style="font-size:11px;color:var(--text-sec);margin-top:2px">或通过边界框设置</div>
+            <div class="bbox-grid">
+              <div>
+                <label>西经 (W)</label>
+                <input type="number" id="bbox_w" placeholder="例：73" step="0.01">
+              </div>
+              <div>
+                <label>东经 (E)</label>
+                <input type="number" id="bbox_e" placeholder="例：135" step="0.01">
+              </div>
+              <div>
+                <label>南纬 (S)</label>
+                <input type="number" id="bbox_s" placeholder="例：18" step="0.01">
+              </div>
+              <div>
+                <label>北纬 (N)</label>
+                <input type="number" id="bbox_n" placeholder="例：54" step="0.01">
+              </div>
+            </div>
+            <button class="btn-aoi" onclick="applyBbox()" style="margin-top:4px">应用边界框</button>
+          </div>
+        </div>
+
+        <!-- Workflow -->
+        <div>
+          <div class="section-title">工作流</div>
+          <div class="workflow-tabs">
+            <button class="wf-tab active" id="wf-grid" onclick="setWorkflow('grid')">
+              <span>🗺</span><span>网格下载</span>
+            </button>
+            <button class="wf-tab" id="wf-point" onclick="setWorkflow('point')">
+              <span>📍</span><span>点位下载</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Grid options -->
+        <div id="grid-options">
+          <div class="section-title">网格方案</div>
+          <div class="field">
+            <select id="grid-scheme" onchange="updateWorkflowFields(); validateForm()">
+              <option value="mgrs">MGRS（军用格网）</option>
+              <option value="tessera_0p1" selected>Tessera 0.1°（经纬度格网）</option>
+              <option value="reference">Reference（自定义参考）</option>
+            </select>
+          </div>
+          <div id="reference-options" style="display:none;margin-top:8px">
+            <div class="field">
+              <label>服务端参考 GeoTIFF 或 Zarr 路径 *</label>
+              <input type="text" id="reference-path" placeholder="D:\\data\\reference.tif">
+            </div>
+            <div class="field" style="margin-top:8px">
+              <label>Tile ID *</label>
+              <input type="text" id="reference-tile-id" placeholder="例如：custom_001">
+            </div>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>Block Size（可选）</label>
+            <input type="number" id="block-size" placeholder="如：256" min="16" max="4096">
+          </div>
+        </div>
+
+        <!-- Point options -->
+        <div id="point-options" style="display:none">
+          <div class="section-title">点位参数</div>
+          <div class="field">
+            <label>样本文件 *（CSV/Parquet/GPKG/GeoJSON；Shapefile请多选全部伴随文件）</label>
+            <input type="file" id="point-files" multiple accept=".csv,.parquet,.shp,.shx,.dbf,.prj,.cpg,.gpkg,.geojson,.json">
+          </div>
+          <div class="field">
+            <label>Point ID 字段名（可选）</label>
+            <input type="text" id="point-id-field" placeholder="如：plot_id">
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>Polygon 转点方式</label>
+            <select id="geometry-mode">
+              <option value="auto">Auto（默认）</option>
+              <option value="representative">内部代表点</option>
+              <option value="centroid">质心</option>
+              <option value="interior_pixels">全部内部10米像元</option>
+            </select>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>GeoPackage 图层名（可选）</label>
+            <input type="text" id="point-layer">
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label>内部像元参考格网（interior_pixels 时可选）</label>
+            <input type="text" id="point-reference-grid" placeholder="服务端 GeoTIFF/Zarr 路径">
+          </div>
+        </div>
+
+        <!-- Years -->
+        <div>
+          <div class="section-title">年份（可多选）</div>
+          <div class="year-tags-scroll" id="year-tags"></div>
+          <div id="year-all-wrap">
+            <input type="checkbox" id="year-all">
+            <label for="year-all">全选 / 取消全选</label>
+          </div>
+        </div>
+
+        <!-- Advanced -->
+        <details style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <summary style="padding:9px 12px;font-size:12px;color:var(--text-sec);cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;background:var(--surface2)">
+            ⚙️ 高级选项
+          </summary>
+          <div style="padding:10px 12px;display:flex;flex-direction:column;gap:8px">
+            <div class="field">
+              <label>最大重试次数</label>
+              <input type="number" id="max-retries" value="3" min="0" max="10">
+            </div>
+            <div class="field">
+              <label>Checkpoint 间隔</label>
+              <input type="number" id="checkpoint-interval" value="8" min="1" max="1000">
+            </div>
+          </div>
+        </details>
+
+        <!-- Submit -->
+        <div>
+          <button id="btn-submit" disabled onclick="submitTask()">
+            🔎 规划并提交任务
+          </button>
+          <div id="plan-summary" style="display:none;margin-top:8px;font-size:11px;color:var(--text-sec);white-space:pre-wrap"></div>
+          <div id="crs-summary" style="display:none;margin-top:6px;font-size:11px;color:var(--text-sec);white-space:pre-wrap"></div>
+          <p class="submit-note">任务将在后台运行，关闭页面不影响执行</p>
+        </div>
+
+        </div><!-- /legacy-form -->
+
+      </div><!-- /sidebar-scroll -->
+    </div><!-- /sidebar -->
+
+    <div id="workspace">
+    <!-- Map -->
+    <div id="map-wrap">
+      <!-- Loading overlay -->
+      <div id="map-loading">
+        <div class="map-spinner"></div>
+        <p id="map-loading-text">正在初始化地图...</p>
+      </div>
+      <!-- Error banner -->
+      <div id="map-error-banner"></div>
+      <!-- Map div -->
+      <div id="map"></div>
+      <!-- Toolbar -->
+      <div id="map-toolbar">
+        <button class="map-tool-btn" id="toolpan" title="平移" onclick="setTool('pan')">✋</button>
+        <button class="map-tool-btn" id="tooldraw" title="绘制多边形" onclick="startDraw()">✏️</button>
+        <button class="map-tool-btn" id="toolloc" title="定位中国" onclick="flyChina()">🇨🇳</button>
+        <button class="map-tool-btn" id="toolmap" title="切换底图" onclick="toggleBaseMapMenu()">🗺</button>
+      </div>
+      <!-- Base map menu -->
+      <div id="basemap-menu">
+        <div class="basemap-item active" data-base="road" onclick="setBaseMap('road')"><span class="dot"></span><span>🗺 矢量地图</span></div>
+        <div class="basemap-item" data-base="sat" onclick="setBaseMap('sat')"><span class="dot"></span><span>🛰 影像底图</span></div>
+        <div class="basemap-item" data-base="grid" onclick="setBaseMap('grid')"><span class="dot"></span><span>▦ 仅经纬网格</span></div>
+      </div>
+      <!-- Draw banner -->
+      <div id="draw-banner">
+        <span>✏️</span>
+        <span id="draw-banner-text">绘制多边形中 — 单击添加顶点，双击完成</span>
+      </div>
+      <div id="grid-legend"><span class="legend-line"></span><span id="grid-legend-text">已解析格网</span></div>
+    </div><!-- /map-wrap -->
+
+    <!-- Horizontal task dock: newest tasks are rendered first on the left. -->
+    <div id="task-panel">
+      <div id="task-panel-header">
+        <h2>📋 下载任务</h2>
+        <div class="task-panel-btns">
+          <button class="icon-btn" onclick="scrollTaskDock(-1)" title="向左滚动">‹</button>
+          <button class="icon-btn" onclick="scrollTaskDock(1)" title="向右滚动">›</button>
+          <button class="icon-btn" onclick="loadTasks()" title="刷新">↻</button>
+          <button class="icon-btn" onclick="clearTasks()" title="清空">✕</button>
+        </div>
+      </div>
+      <div id="task-panel-body">
+        <div class="task-empty" id="task-empty">暂无下载任务</div>
+      </div>
+    </div>
+    </div><!-- /workspace -->
+
+  </div><!-- /main -->
+</div><!-- /app -->
+<div id="directory-modal" class="modal-backdrop" onclick="if(event.target===this) closeOutputBrowser()">
+  <div class="modal-card directory-card">
+    <div class="modal-card-header"><h3>选择服务端存储子目录</h3><button class="icon-btn" onclick="closeOutputBrowser()">✕</button></div>
+    <div class="directory-root" id="directory-root">正在读取输出根目录…</div>
+    <div class="directory-current" id="directory-current">/</div>
+    <div class="directory-list" id="directory-list"><div class="directory-empty">正在加载…</div></div>
+    <div class="directory-create">
+      <input type="text" id="directory-new-name" placeholder="输入新子目录名称">
+      <button type="button" onclick="createOutputFolder()">新建</button>
+    </div>
+    <div class="directory-actions">
+      <button type="button" id="directory-up" onclick="browseOutputDirectory(outputBrowserParent)">返回上级</button>
+      <button type="button" class="primary" onclick="selectCurrentOutputDirectory()">选择当前目录</button>
+    </div>
+  </div>
+</div>
+<div id="result-modal" class="modal-backdrop" onclick="if(event.target===this) closeResults()">
+  <div class="modal-card">
+    <div class="modal-card-header"><h3>任务结果与科研复现信息</h3><button class="icon-btn" onclick="closeResults()">✕</button></div>
+    <pre id="result-content"></pre>
+  </div>
+</div>
+
+<!-- Leaflet (local, keyless) -->
+<script src="/static/leaflet/leaflet.js"></script>
+<!-- shapefile.js (local, for .shp/.zip import) -->
+<script src="/static/shpjs.js"></script>
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let map = null;
+let aoiLayer = null;        // confirmed AOI polygons (all imported/drawn/bbox)
+let resolvedGridLayer = null;
+let drawLayer = null;       // temp vertices + guide line while drawing
+let graticuleLayer = null;   // 10° lon/lat grid overlay
+let roadLayer = null;
+let satLayer = null;
+let drawMode = false;
+let aoiRings = [];          // [[[lat,lng],...], ...] confirmed rings (multiple polygons supported)
+let drawMarkers = [];       // [{lat,lng}] in-progress vertices
+let tempLine = null;        // L.polyline guide
+let baseLayerMode = 'road'; // 'road' | 'sat' | 'grid'
+let currentWorkflow = 'point';
+let pointSourceType = 'csv';
+let tasks = [];
+let mapReady = false;
+let eventSources = {};       // runId -> EventSource (live log/progress)
+let taskLogs = {};           // runId -> bounded recent log lines
+let taskLogOffsets = {};     // runId -> byte offset returned by the server
+let openLogs = new Set();
+const MAX_BROWSER_LOG_LINES = 1000;
+let currentAoiGeoJSON = null;
+let aoiSource = 'none';
+let aoiCrs = 'EPSG:4326';
+let supportedYears = [2017,2018,2019,2020,2021,2022,2023,2024,2025];
+let outputBrowserPath = '';
+let outputBrowserParent = null;
+
+// ── Build year tags ────────────────────────────────────────────────────────
+function buildYearTags(years = supportedYears) {
+  const container = document.getElementById('simple-year-tags');
+  if (!container) return;
+  container.innerHTML = '';
+  years.forEach(y => {
+    const tag = document.createElement('div');
+    tag.className = 'year-tag' + (y === Math.max(...years) ? ' active' : '');
+    tag.textContent = y;
+    tag.dataset.year = y;
+    tag.onclick = () => {
+      tag.classList.toggle('active');
+      document.getElementById('simple-year-all').checked = false;
+      validateForm();
+    };
+    container.appendChild(tag);
+  });
+  document.getElementById('simple-year-all').onchange = function () {
+    document.querySelectorAll('#simple-year-tags .year-tag').forEach(t => {
+      t.classList.toggle('active', this.checked);
+    });
+    validateForm();
+  };
+}
+
+function getSelectedYears() {
+  return Array.from(document.querySelectorAll('#simple-year-tags .year-tag.active'))
+    .map(t => parseInt(t.dataset.year));
+}
+
+// ── Init map (Leaflet, keyless) ────────────────────────────────────────────
+function initMap() {
+  const loading = document.getElementById('map-loading');
+  const loadingText = document.getElementById('map-loading-text');
+
+  if (typeof L === 'undefined') {
+    showMapError('地图库加载失败，请检查网络连接后刷新重试。');
+    loadingText.textContent = '地图库加载失败';
+    loading.classList.add('error');
+    return;
+  }
+
+  map = L.map('map', { center: [35, 105], zoom: 4, zoomControl: true, worldCopyJump: true });
+
+  roadLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+    maxZoom: 19, subdomains: ['mt0','mt1','mt2','mt3'], attribution: '&copy; Google', keepBuffer: 2
+  });
+  satLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 19, subdomains: ['mt0','mt1','mt2','mt3'], attribution: 'Tiles &copy; Google', keepBuffer: 2
+  });
+  baseLayerMode = 'road';
+  roadLayer.addTo(map);
+
+  aoiLayer = L.layerGroup().addTo(map);
+  resolvedGridLayer = L.layerGroup().addTo(map);
+  drawLayer = L.layerGroup().addTo(map);
+  graticuleLayer = buildGraticule().addTo(map);
+
+  // Drawing interactions
+  map.on('click', (e) => { if (drawMode) addDrawVertex(e.latlng); });
+  map.on('dblclick', (e) => {
+    if (drawMode) { L.DomEvent.stop(e); finishDraw(); }
+  });
+
+  // Resize handling
+  window.addEventListener('resize', () => map.invalidateSize());
+
+  mapReady = true;
+  setTimeout(() => hideMapLoading(), 300);
+}
+
+function buildGraticule() {
+  const g = L.layerGroup();
+  const lngs = []; for (let x = -180; x <= 180; x += 10) lngs.push(x);
+  const lats = []; for (let y = -90; y <= 90; y += 10) lats.push(y);
+  const opts = { color: 'rgba(255,255,255,0.22)', weight: 1, interactive: false };
+  lngs.forEach(lng => g.addLayer(L.polyline([[-90, lng], [90, lng]], opts)));
+  lats.forEach(lat => g.addLayer(L.polyline([[lat, -180], [lat, 180]], opts)));
+  return g;
+}
+
+function showMapError(msg) {
+  const banner = document.getElementById('map-error-banner');
+  banner.innerHTML = '<strong>⚠️ 地图提示</strong><br>' + msg;
+  banner.classList.add('visible');
+}
+
+function hideMapLoading() {
+  const loading = document.getElementById('map-loading');
+  loading.classList.add('hidden');
+  setTimeout(() => { loading.style.display = 'none'; }, 450);
+}
+
+// ── Base map switch (vector / imagery / grid-only) ──────────────────────────
+function setBaseMap(mode) {
+  if (!map) return;
+  baseLayerMode = mode;
+  // Remove all base layers
+  if (roadLayer) map.removeLayer(roadLayer);
+  if (satLayer) map.removeLayer(satLayer);
+  if (graticuleLayer) map.removeLayer(graticuleLayer);
+
+  if (mode === 'road') {
+    roadLayer.addTo(map);
+    graticuleLayer.addTo(map);
+  } else if (mode === 'sat') {
+    satLayer.addTo(map);
+    graticuleLayer.addTo(map);
+  } else if (mode === 'grid') {
+    // grid-only: no tiles, just graticule
+    graticuleLayer.addTo(map);
+  }
+  // Update menu UI
+  document.querySelectorAll('.basemap-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.base === mode);
+  });
+  document.getElementById('basemap-menu').classList.remove('visible');
+}
+
+function toggleBaseMapMenu() {
+  document.getElementById('basemap-menu').classList.toggle('visible');
+}
+
+// ── Tool modes ──────────────────────────────────────────────────────────────
+function setTool(mode) {
+  document.querySelectorAll('.map-tool-btn').forEach(b => b.classList.remove('active'));
+  if (mode === 'pan') stopDrawMode();
+  document.getElementById('toolpan').classList.add('active');
+}
+
+function startDraw() {
+  clearDrawTemp();
+  drawMode = true;
+  map.doubleClickZoom.disable();
+  document.getElementById('draw-banner').classList.add('visible');
+  document.getElementById('tooldraw').classList.add('active');
+  document.getElementById('toolpan').classList.remove('active');
+}
+
+function stopDrawMode() {
+  drawMode = false;
+  if (map) map.doubleClickZoom.enable();
+  document.getElementById('draw-banner').classList.remove('visible');
+  document.getElementById('tooldraw').classList.remove('active');
+  document.getElementById('toolpan').classList.add('active');
+}
+
+function addDrawVertex(latlng) {
+  drawMarkers.push([latlng.lat, latlng.lng]);  // store as [lat,lng] array (consistent with import/bbox)
+  L.circleMarker(latlng, {
+    radius: 4, color: '#4d8ef7', weight: 2, fillColor: '#4d8ef7', fillOpacity: 1
+  }).addTo(drawLayer);
+  if (!tempLine) {
+    tempLine = L.polyline([latlng, latlng], { color: '#4d8ef7', weight: 2, dashArray: '5,5' }).addTo(drawLayer);
+  } else {
+    tempLine.addLatLng(latlng);
+  }
+}
+
+function finishDraw() {
+  if (drawMarkers.length < 3) {
+    // Not enough points — keep drawing
+    return;
+  }
+  const ring = drawMarkers.slice();
+  aoiSource = 'drawn_polygon';
+  aoiCrs = 'EPSG:4326 (browser map coordinates)';
+  addRingToAOI(ring);
+  clearDrawTemp();
+  drawMode = false;
+  map.doubleClickZoom.enable();
+  document.getElementById('draw-banner').classList.remove('visible');
+  document.getElementById('tooldraw').classList.remove('active');
+  document.getElementById('toolpan').classList.add('active');
+  setAOIStatus('ready');
+  clearBboxInputs();
+  validateForm();
+}
+
+// Add a [lat,lng] ring to the confirmed AOI layer + aoiRings
+function addRingToAOI(ring) {
+  const poly = L.polygon(ring, {
+    color: '#4d8ef7', weight: 2, fillColor: '#4d8ef7', fillOpacity: 0.18
+  }).addTo(aoiLayer);
+  aoiRings.push(ring);
+  currentAoiGeoJSON = ringsToGeoJSON(aoiRings);
+  fitToAOI();
+}
+
+function clearDrawTemp() {
+  if (drawLayer) drawLayer.clearLayers();
+  drawMarkers = [];
+  tempLine = null;
+}
+
+function clearAOI() {
+  stopDrawMode();
+  if (aoiLayer) aoiLayer.clearLayers();
+  clearDrawTemp();
+  aoiRings = [];
+  currentAoiGeoJSON = null;
+  aoiSource = 'none';
+  aoiCrs = 'EPSG:4326';
+  if (resolvedGridLayer) resolvedGridLayer.clearLayers();
+  document.getElementById('grid-legend').classList.remove('visible');
+  setAOIStatus('empty');
+  const simpleName = document.getElementById('simple-vector-file-name');
+  if (simpleName) simpleName.textContent = '';
+  clearBboxInputs();
+  validateForm();
+}
+
+// ── Vector file import ───────────────────────────────────────────────────────
+async function importAOIFiles(input) {
+  const files = Array.from(input.files || []);
+  const status = document.getElementById('simple-vector-file-name');
+  if (!files.length) return;
+  status.textContent = '正在检查范围、几何和 CRS…';
+  try {
+    const form = new FormData();
+    files.forEach(file => form.append('aoi', file));
+    const response = await fetch('/api/aoi/inspect', {method:'POST', body:form});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '范围文件检查失败');
+    aoiSource = 'uploaded_aoi';
+    aoiCrs = `${data.source_crs} → ${data.normalized_crs}`;
+    commitImport(files.map(file => file.name).join(', '), data.geometry, geojsonToRings(data.geometry));
+    status.textContent = `检查通过 · ${data.feature_count} 个要素 · ${data.geometry_type} · ${aoiCrs}`;
+  } catch (error) {
+    clearAOI();
+    status.textContent = '检查失败：' + error.message;
+  } finally {
+    input.value = '';
+  }
+}
+
+async function importVectorFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const name = file.name.toLowerCase();
+  document.getElementById('vector-file-name').textContent = '解析中：' + file.name + ' …';
+  try {
+    let geo;
+    if (name.endsWith('.geojson') || name.endsWith('.json')) {
+      geo = normalizeGeoJSON(JSON.parse(await file.text()));
+    } else if (name.endsWith('.shp') || name.endsWith('.zip')) {
+      if (name.endsWith('.shp')) throw new Error('请上传包含 .shp/.shx/.dbf/.prj 的 ZIP，裸 .shp 无法可靠确定CRS');
+      if (typeof shp === 'undefined') throw new Error('shapefile 解析库未加载');
+      geo = normalizeGeoJSON(await shp.parseAsync(await file.arrayBuffer()));
+    } else {
+      throw new Error('不支持的文件类型：' + file.name);
+    }
+    aoiSource = 'imported_vector';
+    aoiCrs = name.endsWith('.zip') ? 'EPSG:4326 (由ZIP内.prj重投影；请核对范围)' : 'EPSG:4326 (GeoJSON规范)';
+    commitImport(file.name, geo, geojsonToRings(geo));
+  } catch (err) {
+    document.getElementById('vector-file-name').textContent = '解析失败：' + err.message;
+  } finally {
+    input.value = '';
+  }
+}
+
+function commitImport(fileName, geo, rings) {
+  if (!rings || rings.length === 0) {
+    document.getElementById('vector-file-name').textContent = '未找到多边形几何：' + fileName;
+    return;
+  }
+  if (aoiLayer) aoiLayer.clearLayers();
+  aoiRings = [];
+  rings.forEach(ring => addRingToAOI(ring));
+  currentAoiGeoJSON = geo;
+  setAOIStatus('ready');
+  clearBboxInputs();
+  // Fill bbox fields from union bounds
+  syncInputsFromGeom();
+  validateForm();
+  document.getElementById('vector-file-name').textContent = '已导入 ' + rings.length + ' 个多边形：' + fileName;
+}
+
+function normalizeGeoJSON(geo) {
+  if (geo && geo.type) return geo;
+  if (geo && typeof geo === 'object') {
+    const features = [];
+    Object.values(geo).forEach(value => {
+      const normalized = normalizeGeoJSON(value);
+      if (normalized.type === 'FeatureCollection') features.push(...normalized.features);
+      else if (normalized.type === 'Feature') features.push(normalized);
+    });
+    return {type: 'FeatureCollection', features};
+  }
+  throw new Error('无法识别 GeoJSON 结构');
+}
+
+// Convert GeoJSON (FeatureCollection / Feature / Geometry) → array of [lat,lng] rings
+function geojsonToRings(geo) {
+  const rings = [];
+  const geoms = [];
+  if (!geo) return rings;
+  if (geo.type === 'FeatureCollection') {
+    geo.features.forEach(f => f.geometry && geoms.push(f.geometry));
+  } else if (geo.type === 'Feature') {
+    if (geo.geometry) geoms.push(geo.geometry);
+  } else if (geo.type) {
+    geoms.push(geo);
+  }
+  geoms.forEach(g => {
+    if (g.type === 'Polygon') {
+      if (g.coordinates && g.coordinates[0]) rings.push(ringToLatLng(g.coordinates[0]));
+    } else if (g.type === 'MultiPolygon') {
+      (g.coordinates || []).forEach(poly => poly[0] && rings.push(ringToLatLng(poly[0])));
+    } else if (g.type === 'GeometryCollection') {
+      (g.geometries || []).forEach(sub => {
+        if (sub.type === 'Polygon' && sub.coordinates && sub.coordinates[0]) rings.push(ringToLatLng(sub.coordinates[0]));
+        if (sub.type === 'MultiPolygon') (sub.coordinates||[]).forEach(poly => poly[0] && rings.push(ringToLatLng(poly[0])));
+      });
+    }
+  });
+  return rings;
+}
+
+// GeoJSON coords are [lng,lat]; convert to [lat,lng] ring
+function ringToLatLng(ring) {
+  return ring.map(c => [c[1], c[0]]);
+}
+
+function ringsToGeoJSON(rings) {
+  return {
+    type: 'FeatureCollection',
+    features: rings.filter(r => r.length >= 3).map(r => {
+      const closed = r[r.length-1][0] === r[0][0] && r[r.length-1][1] === r[0][1] ? r : r.concat([r[0]]);
+      return {type: 'Feature', properties: {}, geometry: {type: 'Polygon', coordinates: [closed.map(p => [p[1], p[0]])]}};
+    })
+  };
+}
+
+// ── Bbox helpers ─────────────────────────────────────────────────────────────
+function applyBbox() {
+  const w = parseFloat(document.getElementById('bbox_w').value);
+  const e = parseFloat(document.getElementById('bbox_e').value);
+  const s = parseFloat(document.getElementById('bbox_s').value);
+  const n = parseFloat(document.getElementById('bbox_n').value);
+  if (![w,e,s,n].every(Number.isFinite) || !(-180 <= w && w < e && e <= 180 && -90 <= s && s < n && n <= 90)) {
+    alert('边界框必须满足 -180 ≤ W < E ≤ 180 且 -90 ≤ S < N ≤ 90');
+    return;
+  }
+  aoiSource = 'manual_bbox';
+  aoiCrs = 'EPSG:4326';
+  const ring = [[s, w], [s, e], [n, e], [n, w], [s, w]]; // [lat,lng]
+  if (aoiLayer) aoiLayer.clearLayers();
+  aoiRings = [];
+  addRingToAOI(ring);
+  setAOIStatus('ready');
+  validateForm();
+}
+
+function fitToAOI() {
+  if (!map || aoiRings.length === 0) return;
+  const all = [];
+  aoiRings.forEach(r => r.forEach(p => all.push([p[0], p[1]])));
+  if (all.length === 0) return;
+  map.fitBounds(L.latLngBounds(all), { padding: [30, 30], maxZoom: 12 });
+}
+
+function syncInputsFromGeom() {
+  if (aoiRings.length < 1) return;
+  let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+  aoiRings.forEach(r => r.forEach(p => {
+    minLat = Math.min(minLat, p[0]); maxLat = Math.max(maxLat, p[0]);
+    minLng = Math.min(minLng, p[1]); maxLng = Math.max(maxLng, p[1]);
+  }));
+  document.getElementById('bbox_w').value = minLng.toFixed(2);
+  document.getElementById('bbox_e').value = maxLng.toFixed(2);
+  document.getElementById('bbox_s').value = minLat.toFixed(2);
+  document.getElementById('bbox_n').value = maxLat.toFixed(2);
+}
+
+function clearBboxInputs() {
+  ['bbox_w', 'bbox_e', 'bbox_s', 'bbox_n'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+}
+
+function setAOIStatus(status) {
+  const elements = [document.getElementById('simple-aoi-status'), document.getElementById('aoi-status')].filter(Boolean);
+  elements.forEach(el => { el.className = 'aoi-status ' + status; });
+  if (status === 'empty') {
+    elements.forEach(el => { el.textContent = '尚未设置空间范围'; });
+  } else if (status === 'ready') {
+    const npoly = aoiRings.length;
+    elements.forEach(el => { el.textContent = '空间范围已就绪 · ' + npoly + ' 个区域 · ' + aoiCrs; });
+  }
+}
+
+function activateManualBbox() {
+  if (!['drawn_polygon','imported_vector'].includes(aoiSource)) return;
+  if (aoiLayer) aoiLayer.clearLayers();
+  aoiRings = [];
+  currentAoiGeoJSON = null;
+  aoiSource = 'manual_bbox';
+  aoiCrs = 'EPSG:4326';
+  if (resolvedGridLayer) resolvedGridLayer.clearLayers();
+  setAOIStatus('ready');
+}
+
+function showResolvedGrids(plan) {
+  if (!resolvedGridLayer) return;
+  resolvedGridLayer.clearLayers();
+  if (!plan.grid_features || !plan.grid_features.features) return;
+  L.geoJSON(plan.grid_features, {
+    style: {color:'#f1c40f',weight:2,fillColor:'#f1c40f',fillOpacity:0.08,dashArray:'6,4'},
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties || {};
+      layer.bindPopup(`<strong>${escapeHtml(p.grid_id || '')}</strong><br>${escapeHtml(p.crs || '')}<br>10 m AEF grid`);
+    }
+  }).addTo(resolvedGridLayer);
+  document.getElementById('grid-legend-text').textContent = `${plan.grid_count} grids · ${plan.grid_crs.join(', ')} · 10 m`;
+  document.getElementById('grid-legend').classList.add('visible');
+}
+
+// ── Map controls ─────────────────────────────────────────────────────────────
+function flyChina() {
+  if (!map) return;
+  map.setView([35, 105], 4);
+}
+
+// ── Workflow ─────────────────────────────────────────────────────────────────
+function setWorkflow(wf) {
+  currentWorkflow = wf;
+  document.getElementById('simple-wf-grid').classList.toggle('active', wf === 'grid');
+  document.getElementById('simple-wf-point').classList.toggle('active', wf === 'point');
+  document.getElementById('simple-grid-options').style.display = wf === 'grid' ? '' : 'none';
+  document.getElementById('simple-point-options').style.display = wf === 'point' ? '' : 'none';
+  updateWorkflowFields();
+  validateForm();
+}
+
+function setGridScheme(scheme) {
+  document.getElementById('grid-scheme').value = scheme;
+  document.getElementById('scheme-mgrs').classList.toggle('active', scheme === 'mgrs');
+  document.getElementById('scheme-tessera').classList.toggle('active', scheme === 'tessera_0p1');
+  if (resolvedGridLayer) resolvedGridLayer.clearLayers();
+  document.getElementById('grid-legend').classList.remove('visible');
+  validateForm();
+}
+
+function setPointSourceType(kind) {
+  pointSourceType = kind;
+  const input = document.getElementById('simple-point-files');
+  input.value = '';
+  input.accept = kind === 'csv' ? '.csv' : '.shp,.shx,.dbf,.prj,.cpg';
+  input.multiple = kind === 'shp';
+  document.getElementById('point-source-csv').classList.toggle('active', kind === 'csv');
+  document.getElementById('point-source-shp').classList.toggle('active', kind === 'shp');
+  document.getElementById('point-file-help').textContent = kind === 'csv'
+    ? 'CSV 必须包含唯一 sample_id，以及 WGS84 的 lon、lat。'
+    : '请同时选择 .shp、.shx、.dbf 和 .prj；只接受 Point/MultiPoint，Polygon 会被拒绝。';
+  document.getElementById('point-picker-icon').textContent = kind === 'csv' ? '📄' : '📂';
+  document.getElementById('point-picker-label').textContent = kind === 'csv' ? '选择 CSV 文件' : '选择 Shapefile 组件';
+  document.getElementById('point-picker-detail').textContent = '尚未选择文件';
+  document.getElementById('point-file-status').textContent = '';
+  validateForm();
+}
+
+function updateWorkflowFields() {
+  // The simplified browser exposes only MGRS and Tessera; backend safeguards remain unchanged.
+}
+
+// ── Form validation ──────────────────────────────────────────────────────────
+function validateForm() {
+  const project = document.getElementById('project').value.trim() || 'YOUR_GEE_PROJECT';
+  const hasAOI = aoiRings.length >= 1 && aoiRings.every(r => r.length >= 3);
+  const bbox = [parseFloat(document.getElementById('bbox_w').value),
+                  parseFloat(document.getElementById('bbox_e').value),
+                  parseFloat(document.getElementById('bbox_s').value),
+                  parseFloat(document.getElementById('bbox_n').value)];
+  const hasBbox = bbox.every(Number.isFinite) && bbox[0] < bbox[1] && bbox[2] < bbox[3];
+  const yearsReady = getSelectedYears().length > 0;
+  let workflowReady = false;
+  if (currentWorkflow === 'point') {
+    const files = Array.from(document.getElementById('simple-point-files').files);
+    workflowReady = pointSourceType === 'csv'
+      ? files.length === 1 && files[0].name.toLowerCase().endsWith('.csv')
+      : files.some(file => file.name.toLowerCase().endsWith('.shp'));
+  } else {
+    workflowReady = hasAOI || hasBbox;
+  }
+  document.getElementById('simple-btn-submit').disabled = !project || !yearsReady || !workflowReady;
+}
+
+// ── Task submission ──────────────────────────────────────────────────────────
+function currentBbox() {
+  let w = parseFloat(document.getElementById('bbox_w').value);
+  let e = parseFloat(document.getElementById('bbox_e').value);
+  let s = parseFloat(document.getElementById('bbox_s').value);
+  let n = parseFloat(document.getElementById('bbox_n').value);
+  if (aoiRings.length >= 1) {
+    w = 180; e = -180; s = 90; n = -90;
+    aoiRings.forEach(r => r.forEach(p => {
+      s = Math.min(s, p[0]); n = Math.max(n, p[0]);
+      w = Math.min(w, p[1]); e = Math.max(e, p[1]);
+    }));
+  }
+  return [w,e,s,n].every(Number.isFinite) ? {west:w,east:e,south:s,north:n} : null;
+}
+
+function buildPayload() {
+  const project = document.getElementById('project').value.trim() || 'YOUR_GEE_PROJECT';
+  const output = document.getElementById('simple-output').value.trim();
+  const blockSize = parseInt(document.getElementById('block-size').value) || 256;
+  const maxRetries = Number.parseInt(document.getElementById('max-retries').value);
+  const cpInterval = parseInt(document.getElementById('checkpoint-interval').value) || 8;
+  const years = getSelectedYears();
+  const gridScheme = document.getElementById('grid-scheme').value;
+  const pointIdField = document.getElementById('point-id-field').value.trim();
+  return {
+    workflow: currentWorkflow,
+    project,
+    output,
+    aoi: currentWorkflow === 'grid' ? currentAoiGeoJSON : null,
+    bbox: currentWorkflow === 'grid' ? currentBbox() : null,
+    years,
+    gridScheme: currentWorkflow === 'grid' ? gridScheme : null,
+    blockSize,
+    maxRetries: Number.isFinite(maxRetries) ? maxRetries : 6,
+    checkpointInterval: cpInterval,
+    pointIdField: currentWorkflow === 'point' ? pointIdField : null,
+    referencePath: document.getElementById('reference-path').value.trim(),
+    tileId: document.getElementById('reference-tile-id').value.trim(),
+    geometryMode: document.getElementById('geometry-mode').value,
+    layer: document.getElementById('point-layer').value.trim(),
+    referenceGrid: document.getElementById('point-reference-grid').value.trim(),
+  };
+}
+
+async function submitTask() {
+  const button = document.getElementById('simple-btn-submit');
+  const summary = document.getElementById('simple-plan-summary');
+  const payload = buildPayload();
+  button.disabled = true;
+  try {
+    let planResponse;
+    if (currentWorkflow === 'point') {
+      const form = new FormData();
+      form.append('payload', JSON.stringify(payload));
+      Array.from(document.getElementById('simple-point-files').files).forEach(file => form.append('samples', file));
+      planResponse = await fetch('/api/plan/points', {method:'POST', body:form});
+    } else {
+      planResponse = await fetch('/api/plan', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+      });
+    }
+    const plan = await planResponse.json();
+    if (!planResponse.ok) throw new Error(plan.error || '规划失败');
+    let details;
+    if (plan.workflow === 'grid') {
+      const shownIds = plan.grid_ids.slice(0, 20).join(', ') + (plan.grid_count > 20 ? ' …' : '');
+      details = `方案：${plan.grid_scheme}\n格网：${plan.grid_count}\nGrid IDs：${shownIds}`;
+      showResolvedGrids(plan);
+      const crs = document.getElementById('simple-crs-summary');
+      crs.textContent = `AOI交换坐标：${plan.aoi_crs}\n地图显示：EPSG:3857（仅可视化）\n输出格网：${plan.grid_crs.join(', ')}\n输出分辨率：${plan.resolution_m} m`;
+      crs.style.display = '';
+    } else {
+      details = `点位：${plan.rows}\n文件检查：${(plan.source_geometry_types || []).join(', ')}\n特征列：${plan.feature_count}\n坐标：${plan.source_crs} → ${plan.normalized_crs}`;
+      const crs = document.getElementById('simple-crs-summary');
+      crs.textContent = `输入坐标：${plan.source_crs}\nEarth Engine采样坐标：${plan.normalized_crs}\nAEF原生像元尺度：${plan.resolution_m} m`;
+      crs.style.display = '';
+    }
+    const text = `${details}\n年份：${plan.years.join(', ')}\n未压缩数据量：${plan.raw_gib.toFixed(3)} GiB\n所需可用磁盘：${plan.disk_required_gib.toFixed(2)} GiB\n当前可用磁盘：${plan.disk_free_gib.toFixed(2)} GiB`;
+    summary.textContent = text + (plan.blocked_reasons.length ? '\n阻止原因：'+plan.blocked_reasons.join('; ') : '');
+    summary.style.display = '';
+    if (!plan.can_start) throw new Error(plan.blocked_reasons.join('; '));
+    let confirmation = '';
+    if (plan.strong_confirmation) {
+      confirmation = window.prompt(text + `\n\n请输入以下文本确认：\n${plan.confirmation_phrase}`) || '';
+      if (confirmation !== plan.confirmation_phrase) return;
+    } else if (!window.confirm(text + '\n\n确认启动下载？')) {
+      return;
+    }
+    const response = await fetch('/api/tasks', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({planId:plan.plan_id, confirmation})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '提交失败');
+    loadTasks();
+  } catch (error) {
+    alert('提交失败：' + error.message);
+  } finally {
+    validateForm();
+  }
+}
+
+function loadTasks() {
+  fetch('/api/tasks')
+    .then(r => r.json())
+    .then(data => {
+      tasks = data;
+      renderTasks();
+      // Auto-subscribe live log/progress for running tasks
+      tasks.forEach(t => {
+        if (['queued','running','cancelling'].includes(t.status)) subscribeTask(t.run_id);
+      });
+    })
+    .catch(() => {});
+}
+
+function clearTasks() {
+  if (!window.confirm('清空会取消仍在运行或排队的任务。继续吗？')) return;
+  Promise.all(tasks.map(t => fetch('/api/tasks/' + t.run_id, {method:'DELETE'})))
+    .then(loadTasks).catch(() => loadTasks());
+}
+
+// ── Live progress parsing ─────────────────────────────────────────────────────
+function parseProgress(line) {
+  let m;
+  if ((m = line.match(/\[(\d+)\s*\/\s*(\d+)\]/))) return parseInt(m[1]) / parseInt(m[2]);
+  if ((m = line.match(/Grid\s+(\d+)\s*\/\s*(\d+)/))) return parseInt(m[1]) / parseInt(m[2]);
+  if ((m = line.match(/Block\s+(\d+)\s*\/\s*(\d+)/))) return parseInt(m[1]) / parseInt(m[2]);
+  if ((m = line.match(/(\d{1,3})\s*%/))) return parseInt(m[1]) / 100;
+  if ((m = line.match(/(\d+)\s*\/\s*(\d+)\s*完成/))) return parseInt(m[1]) / parseInt(m[2]);
+  return null;
+}
+
+function subscribeTask(runId) {
+  if (eventSources[runId]) return; // already subscribed
+  const offset = taskLogOffsets[runId] || 0;
+  const es = new EventSource('/api/tasks/' + runId + '/log?offset=' + offset);
+  eventSources[runId] = es;
+  const logEl = () => document.getElementById('log-' + runId);
+  es.addEventListener('log', (ev) => {
+    let line = '';
+    try { line = JSON.parse(ev.data); } catch { line = ev.data; }
+    taskLogOffsets[runId] = parseInt(ev.lastEventId) || taskLogOffsets[runId] || 0;
+    const lines = taskLogs[runId] || (taskLogs[runId] = []);
+    lines.push(line);
+    if (lines.length > MAX_BROWSER_LOG_LINES) lines.splice(0, lines.length - MAX_BROWSER_LOG_LINES);
+    const el = logEl();
+    if (el) {
+      el.textContent = lines.join('\n') + '\n';
+      el.scrollTop = el.scrollHeight;
+    }
+    const p = parseProgress(line);
+    if (p != null) updateTaskProgress(runId, p);
+  });
+  es.addEventListener('progress', (ev) => {
+    let event = {};
+    try { event = JSON.parse(ev.data); } catch (_) {}
+    taskLogOffsets[runId] = parseInt(ev.lastEventId) || taskLogOffsets[runId] || 0;
+    if (typeof event.overall_progress === 'number') updateTaskProgress(runId, event.overall_progress);
+    const txt = document.getElementById('progtext-' + runId);
+    if (txt && event.grid_id) {
+      const eta = typeof event.eta_seconds === 'number' ? ` · 当前格网 ETA ${(event.eta_seconds/60).toFixed(1)} min` : '';
+      txt.textContent += ` · ${event.grid_id}${eta}`;
+    }
+  });
+  es.addEventListener('eof', () => {
+    if (eventSources[runId]) { eventSources[runId].close(); delete eventSources[runId]; }
+    loadTasks();
+  });
+  es.onerror = () => {
+    // connection closed or errored → refresh status
+    if (eventSources[runId]) { eventSources[runId].close(); delete eventSources[runId]; }
+    loadTasks();
+  };
+}
+
+function updateTaskProgress(runId, frac) {
+  const bar = document.getElementById('prog-' + runId);
+  const txt = document.getElementById('progtext-' + runId);
+  if (bar) {
+    bar.classList.remove('indeterminate');
+    bar.style.width = Math.round(frac * 100) + '%';
+  }
+  if (txt) txt.textContent = '进度 ' + Math.round(frac * 100) + '%';
+}
+
+function renderTasks() {
+  const body = document.getElementById('task-panel-body');
+  const empty = document.getElementById('task-empty');
+  if (tasks.length === 0) {
+    empty.style.display = '';
+    body.querySelectorAll('.task-card').forEach(c => c.remove());
+    return;
+  }
+  empty.style.display = 'none';
+  body.querySelectorAll('.task-card').forEach(c => c.remove());
+  tasks.forEach(t => {
+    const frac = typeof t.progress === 'number' ? t.progress : null;
+    const detail = t.progress_detail || {};
+    const queueText = t.status === 'queued' && t.queue_position ? ` · 队列第 ${t.queue_position} 位` : '';
+    const stageText = t.stage ? ` · 阶段 ${t.stage}` : '';
+    const gridText = detail.grid_id ? ` · ${detail.grid_id}` : '';
+    const etaText = typeof detail.eta_seconds === 'number' ? ` · 当前格网 ETA ${(detail.eta_seconds / 60).toFixed(1)} min` : '';
+    const years = Array.isArray(t.years) && t.years.length ? t.years.join(', ') : '—';
+    const gridIds = Array.isArray(t.grid_ids) ? t.grid_ids : [];
+    const target = t.workflow === 'points' ? '点位 AEF 特征' : `${t.grid_scheme === 'mgrs' ? 'MGRS' : 'Tessera 0.1°'} AEF 格网`;
+    let scope = '—';
+    if (t.workflow === 'points') {
+      scope = `${t.source_name || '点位文件'} · ${t.sample_count == null ? '—' : t.sample_count} 点`;
+    } else if (gridIds.length) {
+      scope = gridIds.slice(0, 3).join(', ') + (gridIds.length > 3 ? ` 等 ${gridIds.length} 个格网` : '');
+    } else if (Array.isArray(t.bbox) && t.bbox.length === 4) {
+      scope = t.bbox.map(v => Number(v).toFixed(3)).join(', ');
+    }
+    const outputText = t.output_dir ? `<div class="task-card-meta task-card-path" title="${escapeHtml(t.output_dir)}"><strong>存储：</strong>${escapeHtml(t.output_dir)}</div>` : '';
+    const progressText = frac!=null ? `进度 ${Math.round(frac*100)}%` : (t.status==='running' ? '运行中…' : '');
+    const validationText = t.validation
+      ? `<span class="task-validation ${t.validation.valid ? 'ok' : 'failed'}">产物验证：${t.validation.valid ? '通过' : '失败'}${(t.validation.warnings || []).length ? ` · ${t.validation.warnings.length} 个警告` : ''}</span>`
+      : '';
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    card.innerHTML = `
+      <div class="task-card-title">
+        <span class="task-status ${t.status}">${taskStatusLabel(t.status)}</span>
+        <span>${escapeHtml(t.run_id)}</span>
+      </div>
+      <div class="task-card-meta"><strong>目标：</strong>${escapeHtml(target)}${queueText}${stageText}${gridText}${etaText}</div>
+      <div class="task-card-meta" title="${escapeHtml(scope)}"><strong>范围：</strong>${escapeHtml(scope)}</div>
+      <div class="task-card-meta"><strong>年份：</strong>${escapeHtml(years)}${t.grid_crs && t.grid_crs.length ? ' · '+escapeHtml(t.grid_crs.join(', ')) : ''}</div>
+      ${outputText}
+      <div class="task-progress"><div class="task-progress-bar ${frac==null && t.status==='running' ? 'indeterminate' : ''}" id="prog-${t.run_id}" style="${frac!=null ? 'width:'+Math.round(frac*100)+'%' : ''}"></div></div>
+      <div class="task-progress-text" id="progtext-${t.run_id}"><span>${progressText}</span>${validationText}</div>
+      <div class="task-card-log ${openLogs.has(t.run_id) ? 'shown' : ''}" id="log-${t.run_id}">${escapeHtml((taskLogs[t.run_id] || []).join('\n'))}</div>
+      <div class="task-card-actions">
+        <button class="task-action-btn" onclick="toggleLog('${t.run_id}')">日志</button>
+        <button class="task-action-btn" title="打开完整日志" onclick="window.open('/api/tasks/${t.run_id}/logfile','_blank')">完整</button>
+        ${t.output_dir ? '<button class="task-action-btn" title="复制完整输出路径" onclick="copyOutputPath(\'' + t.run_id + '\')">路径</button>' : ''}
+        ${t.status === 'done' ? '<button class="task-action-btn" onclick="showResults(\'' + t.run_id + '\')">结果</button>' : ''}
+        ${['queued','running','cancelling'].includes(t.status) ? '<button class="task-action-btn danger" onclick="cancelTask(\'' + t.run_id + '\')">取消</button>' : ''}
+        ${['done','failed','error','cancelled','interrupted'].includes(t.status) ? '<button class="task-action-btn danger" onclick="deleteTask(\'' + t.run_id + '\')">隐藏</button>' : ''}
+      </div>
+    `;
+    body.appendChild(card);
+  });
+}
+
+function taskStatusLabel(status) {
+  return ({queued:'排队',running:'下载中',validating_output:'验证中',done:'完成',failed:'失败',error:'错误',cancelled:'已取消',cancelling:'取消中',interrupted:'已中断'})[status] || status;
+}
+
+function scrollTaskDock(direction) {
+  document.getElementById('task-panel-body').scrollBy({left: direction * 400, behavior:'smooth'});
+}
+
+function toggleLog(runId) {
+  const el = document.getElementById('log-' + runId);
+  if (!el) return;
+  el.classList.toggle('shown');
+  const showing = el.classList.contains('shown');
+  if (showing) openLogs.add(runId); else openLogs.delete(runId);
+  if (showing && !el.dataset.loaded) {
+    el.dataset.loaded = '1';
+    subscribeTask(runId);
+  }
+}
+
+function cancelTask(runId) {
+  fetch('/api/tasks/' + runId, { method: 'DELETE' })
+    .then(() => loadTasks())
+    .catch(() => {});
+}
+
+function deleteTask(runId) {
+  fetch('/api/tasks/' + runId, { method: 'DELETE' })
+    .then(() => loadTasks())
+    .catch(() => {});
+}
+
+async function copyOutputPath(runId) {
+  const task = tasks.find(t => t.run_id === runId);
+  if (!task || !task.output_dir) return;
+  try {
+    await navigator.clipboard.writeText(task.output_dir);
+  } catch (_) {
+    window.prompt('复制输出路径：', task.output_dir);
+  }
+}
+
+async function showResults(runId) {
+  try {
+    const response = await fetch('/api/tasks/' + runId + '/results');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '结果不可用');
+    document.getElementById('result-content').textContent = JSON.stringify(data, null, 2);
+    document.getElementById('result-modal').classList.add('visible');
+  } catch (error) { alert(error.message); }
+}
+
+function closeResults() {
+  document.getElementById('result-modal').classList.remove('visible');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function shortPath(value) {
+  const parts = String(value).replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.slice(-2).join('/');
+}
+
+// ── Server-side output folder browser ───────────────────────────────────────
+async function openOutputBrowser() {
+  document.getElementById('directory-modal').classList.add('visible');
+  const selected = document.getElementById('simple-output').value.trim();
+  await browseOutputDirectory(selected);
+}
+
+function closeOutputBrowser() {
+  document.getElementById('directory-modal').classList.remove('visible');
+}
+
+async function browseOutputDirectory(path = '') {
+  const list = document.getElementById('directory-list');
+  list.innerHTML = '<div class="directory-empty">正在加载…</div>';
+  try {
+    const response = await fetch('/api/output-directories?path=' + encodeURIComponent(path || ''));
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '目录读取失败');
+    outputBrowserPath = data.path || '';
+    outputBrowserParent = data.parent;
+    document.getElementById('directory-root').textContent = '输出根目录：' + data.output_root;
+    document.getElementById('directory-current').textContent = '/' + outputBrowserPath;
+    document.getElementById('directory-up').disabled = outputBrowserParent === null;
+    list.innerHTML = '';
+    if (!data.directories.length) {
+      list.innerHTML = '<div class="directory-empty">当前目录中没有子目录</div>';
+    } else {
+      data.directories.forEach(item => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'directory-item';
+        button.innerHTML = '<span>📁</span><span></span>';
+        button.lastElementChild.textContent = item.name;
+        button.addEventListener('click', () => browseOutputDirectory(item.path));
+        list.appendChild(button);
+      });
+    }
+  } catch (error) {
+    list.innerHTML = '<div class="directory-empty"></div>';
+    list.firstElementChild.textContent = error.message;
+  }
+}
+
+function selectCurrentOutputDirectory() {
+  const input = document.getElementById('simple-output');
+  input.value = outputBrowserPath;
+  document.getElementById('output-picker-detail').textContent = outputBrowserPath || '输出根目录下自动命名';
+  input.dispatchEvent(new Event('input'));
+  closeOutputBrowser();
+}
+
+function clearOutputDirectory() {
+  const input = document.getElementById('simple-output');
+  input.value = '';
+  document.getElementById('output-picker-detail').textContent = '未指定，任务将自动命名';
+  input.dispatchEvent(new Event('input'));
+}
+
+async function createOutputFolder() {
+  const input = document.getElementById('directory-new-name');
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    const response = await fetch('/api/output-directories', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({parent:outputBrowserPath, name})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '新建目录失败');
+    input.value = '';
+    await browseOutputDirectory(data.path);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function loadCapabilities() {
+  try {
+    const response = await fetch('/api/capabilities');
+    const data = await response.json();
+    if (response.ok && Array.isArray(data.years)) {
+      supportedYears = data.years;
+      buildYearTags(supportedYears);
+      validateForm();
+    }
+    if (data.output_root) {
+      document.getElementById('simple-output').title = '输出根目录：' + data.output_root;
+      document.getElementById('output-root-hint').textContent = '保存位置：' + data.output_root + '；下载前会检查磁盘空间。';
+    }
+  } catch (_) { /* built-in supported years remain available offline */ }
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+(function bootstrap() {
+  buildYearTags();
+  loadCapabilities();
+  initMap();
+
+  document.getElementById('project').value = 'YOUR_GEE_PROJECT';
+  setGridScheme('mgrs');
+  setPointSourceType('csv');
+  document.getElementById('simple-output').addEventListener('input', validateForm);
+  document.getElementById('simple-point-files').addEventListener('change', function () {
+    const names = Array.from(this.files).map(file => file.name);
+    document.getElementById('point-file-status').textContent = names.length ? '已选择：' + names.join(', ') : '';
+    document.getElementById('point-picker-detail').textContent = names.length ? names.join(', ') : '尚未选择文件';
+    validateForm();
+  });
+  ['bbox_w', 'bbox_e', 'bbox_s', 'bbox_n'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+      activateManualBbox();
+      const vals = ['bbox_w', 'bbox_e', 'bbox_s', 'bbox_n'].map(rid => parseFloat(document.getElementById(rid).value));
+      if (vals.some(v => !isNaN(v))) { setAOIStatus('ready'); validateForm(); }
+    });
+  });
+  // Close basemap menu when clicking elsewhere
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('basemap-menu');
+    const btn = document.getElementById('toolmap');
+    if (menu.classList.contains('visible') && !menu.contains(e.target) && e.target !== btn) {
+      menu.classList.remove('visible');
+    }
+  });
+
+  validateForm();
+  loadTasks();
+  setInterval(loadTasks, 10000);
+})();
+</script>
+</body>
+</html>

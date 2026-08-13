@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -41,6 +42,16 @@ from aef_grits.points import (  # noqa: E402
 )
 
 
+EVENT_PREFIX = "AEF_EVENT "
+DEFAULT_OUTPUT_ROOT = Path(
+    os.environ.get("AEF_GRITS_OUTPUT_ROOT", str(Path.cwd() / "outputs"))
+).expanduser()
+
+
+def emit_event(event: str, **payload) -> None:
+    print(EVENT_PREFIX + json.dumps({"event": event, **payload}, separators=(",", ":")), flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -52,8 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=ROOT / "outputs" / "point_stream",
-        help="Output directory (default: <repository>/outputs/point_stream)",
+        default=DEFAULT_OUTPUT_ROOT / "point_stream",
+        help="Output directory (default: $AEF_GRITS_OUTPUT_ROOT/point_stream or ./outputs/point_stream)",
     )
     parser.add_argument(
         "--project",
@@ -246,6 +257,12 @@ def main() -> None:
         max_points=args.max_points,
     )
     frame, validation = validate_point_table(frame, years, chunk_size=args.chunk_size)
+    emit_event(
+        "preflight_complete",
+        workflow="points",
+        rows=len(frame),
+        total_chunks=validation.get("estimated_shards"),
+    )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     validation.update(
         {
@@ -320,6 +337,15 @@ def main() -> None:
                 f"status={record['status']} elapsed={elapsed:.1f}s",
                 flush=True,
             )
+            emit_event(
+                "progress",
+                workflow="points",
+                completed=completed,
+                total=len(jobs),
+                chunk=record["chunk"],
+                complete_rows=record["complete_rows"],
+                elapsed_seconds=elapsed,
+            )
 
     catalog = pd.DataFrame(sorted(records, key=lambda value: value["chunk"]))
     catalog["signature"] = signature
@@ -338,6 +364,7 @@ def main() -> None:
     }
     write_json(report, args.out_dir / "report.json")
     print(json.dumps(report, indent=2))
+    emit_event("run_complete", workflow="points", completed=len(catalog), total=len(jobs))
 
 
 if __name__ == "__main__":

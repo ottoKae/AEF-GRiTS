@@ -2,6 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+**支持平台：** `Windows` · `macOS（Intel / Apple Silicon）` · `Linux`<br>
+**使用界面：** `Web网页应用` · `Python命令行`
+
 AEF-GRiTS 是一套独立且可复现的年度 AlphaEarth Foundation（AEF）嵌入特征采样、导出、下载与验证工作流。它在运行和数据资源上均不依赖其他源码仓库，命令所需的全球MGRS格网表已经随本仓库和Python包发布。
 
 本工作流支持四种下载方式：
@@ -70,7 +73,19 @@ python -c "from aef_grits import mgrs_index_path; print(mgrs_index_path())"
 python scripts/stream_aef_grid_ee.py --help
 ```
 
-## 安装
+## Windows、macOS和Linux安装
+
+Windows、Linux、Intel Mac和Apple Silicon Mac统一推荐使用独立的conda-forge环境。Windows请在Anaconda Prompt或PowerShell执行，macOS/Linux请在终端执行：
+
+```bash
+conda env create -f environment-download.yml
+conda activate aef_grits_download
+earthengine authenticate --auth_mode=localhost
+earthengine set_project YOUR_GEE_PROJECT
+aef-grits-doctor --project YOUR_GEE_PROJECT --output ./outputs
+```
+
+该环境同时包含Python下载命令和本地Web应用。安装后可直接使用`aef-grits-points`、`aef-grits-grid`和`aef-grits-doctor`。Linux本地/远程服务器、Intel/Apple Silicon Mac、Earth Engine登录、磁盘和长任务运行方法见[`docs/linux-macos-download.md`](docs/linux-macos-download.md)。
 
 包含 GDAL 栅格目录工具的可复现安装方式为：
 
@@ -616,6 +631,17 @@ python scripts/download_drive_exports.py --prefix 17MPU_AEF --out outputs/raster
 ```bash
 python scripts/build_aef_raster_catalog.py --root outputs/rasters/17MPU --prefix 17MPU_AEF --tile-id 17MPU --reference /path/to/reference.tif --out outputs/rasters/17MPU/catalog.csv
 ```
+
+## 本地网页任务规划器
+
+AEF-GRiTS 在Windows、macOS和Linux上均可运行只监听本机的网页界面。主界面简化为“选择点位或格网 → 选择输入与空间范围 → 选择年份和存储位置 → 下载”。点位支持带`sample_id,lon,lat`的WGS84 CSV，以及只含Point/MultiPoint且包含`.prj`的完整Shapefile；Polygon会在预检时拒绝。格网只提供MGRS和Tessera 0.1°，空间范围可以进行矢量绘制或使用带正确`.prj`的Shapefile。存储位置通过受输出根目录约束的服务端目录选择器确定。全部工作流仍采用带签名的“预检—确认—执行”两阶段协议，并保留有界队列、进程树取消、数据量与磁盘硬限制、结构化进度、自动产物验证、权威CRS格网覆盖和科研复现元数据。
+
+```bash
+conda activate aef_grits_download
+python webapp/app.py
+```
+
+随后访问`http://127.0.0.1:5555`，依次选择下载目标、输入/空间范围、年份和存储子目录，点击“开始下载”；系统会先预检并要求确认。具体CRS契约、精确确认语义、产物验证、浏览器端到端测试、输出根目录规则和运行配置见[webapp/README.md](webapp/README.md)。
 
 ## 验证
 

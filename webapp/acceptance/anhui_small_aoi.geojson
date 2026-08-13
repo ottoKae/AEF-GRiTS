@@ -1,0 +1,15 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Anhui small AOI for MGRS planning only"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[117.01, 31.01], [117.09, 31.01], [117.09, 31.09], [117.01, 31.09], [117.01, 31.01]]]
+      }
+    }
+  ]
+}

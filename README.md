@@ -2,6 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+**Platforms:** `Windows` · `macOS (Intel / Apple Silicon)` · `Linux`<br>
+**Interfaces:** `Web application` · `Python CLI`
+
 AEF-GRiTS is a standalone, reproducible workflow for sampling, exporting,
 downloading and validating annual AlphaEarth Foundation (AEF) embeddings. It has
 no runtime or data-resource dependency on another source repository. The global
@@ -82,7 +85,25 @@ python -c "from aef_grits import mgrs_index_path; print(mgrs_index_path())"
 python scripts/stream_aef_grid_ee.py --help
 ```
 
-## Installation
+## Installation on Windows, macOS, and Linux
+
+Use the dedicated architecture-neutral conda-forge environment on Windows,
+Linux, Intel macOS, or Apple-Silicon macOS. Run these commands in Anaconda
+Prompt/PowerShell on Windows or a terminal on macOS/Linux:
+
+```bash
+conda env create -f environment-download.yml
+conda activate aef_grits_download
+earthengine authenticate --auth_mode=localhost
+earthengine set_project YOUR_GEE_PROJECT
+aef-grits-doctor --project YOUR_GEE_PROJECT --output ./outputs
+```
+
+The environment includes the Python download commands and local Web
+application. The installed commands are `aef-grits-points`, `aef-grits-grid`,
+and `aef-grits-doctor`. Linux desktop/server and Intel/Apple-Silicon macOS
+authentication, storage, and long-running-job instructions are in
+[`docs/linux-macos-download.md`](docs/linux-macos-download.md).
 
 The reproducible option, including GDAL for raster catalogs, is:
 
@@ -798,6 +819,30 @@ Build one VRT per year and validate all grids against the reference:
 ```bash
 python scripts/build_aef_raster_catalog.py --root outputs/rasters/17MPU --prefix 17MPU_AEF --tile-id 17MPU --reference /path/to/reference.tif --out outputs/rasters/17MPU/catalog.csv
 ```
+
+## Local web task planner
+
+AEF-GRiTS includes a localhost-only browser interface on Windows, macOS, and
+Linux for planning and running
+the same point and grid streaming commands documented above. It supports real
+MGRS AOI intersection, Tessera 0.1-degree cells, vector drawing, Shapefile AOIs,
+and CSV/Point-Shapefile uploads. The main form is a short target → input →
+year/output flow. Every workflow uses a signed two-stage preflight/confirmation protocol,
+bounded queue and process-tree cancellation, disk and size guards, structured
+progress, automatic output validation, authoritative CRS footprints, and
+reproducibility metadata.
+
+```bash
+conda activate aef_grits_download
+python webapp/app.py
+```
+
+Then open `http://127.0.0.1:5555`. Choose Points or Grid, select the input/AOI,
+years, and a server-side output subdirectory, and press Download. The Web app
+performs preflight and asks for confirmation before starting. See
+[webapp/README.md](webapp/README.md) for
+the CRS contract, exact confirmation semantics, output validation, browser E2E
+tests, output-root rules, and runtime configuration.
 
 ## Validation
 

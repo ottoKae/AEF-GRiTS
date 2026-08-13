@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import shutil
 from pathlib import Path
 import sys
 import time
@@ -48,8 +49,13 @@ COMPRESSION_LEVEL = 7
 COMPRESSION_SHUFFLE = "noshuffle"
 COMPRESSION_TYPESIZE = 4
 COMPRESSION_PROTOCOL_VERSION = 2
+EVENT_PREFIX = "AEF_EVENT "
 DEFAULT_INNER_CHUNK = 64
 DEFAULT_SHARD_SIZE = 512
+
+
+def emit_event(event: str, **payload) -> None:
+    print(EVENT_PREFIX + json.dumps({"event": event, **payload}, separators=(",", ":")), flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +99,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-every", type=int, default=8)
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--high-volume", action="store_true")
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Resolve grids, outputs and uncompressed size without contacting Earth Engine",
+    )
     return parser.parse_args()
 
 
@@ -454,6 +465,15 @@ def _stream_one(
                     f"rate={rate:.2f} blocks/s eta={eta / 60:.1f} min",
                     flush=True,
                 )
+                emit_event(
+                    "progress",
+                    workflow="grid",
+                    grid_id=grid_spec.grid_id,
+                    completed=len(completed),
+                    total=len(all_blocks),
+                    eta_seconds=None if not math.isfinite(eta) else eta,
+                    rate_per_second=rate,
+                )
                 submit_next()
     write_json({"signature": signature, "completed": sorted(completed)}, progress_path)
     if len(completed) != len(all_blocks):
@@ -522,14 +542,52 @@ def main() -> None:
         if args.out_dir is not None
         else next(iter(outputs.values())).parent / "catalog.parquet"
     )
+    if args.plan_only:
+        root = args.out_dir or next(iter(outputs.values())).parent
+        root.mkdir(parents=True, exist_ok=True)
+        raw_bytes = sum(
+            len(years) * len(AEF_BANDS) * grid.width * grid.height * BYTES_PER_VALUE
+            for grid in grids
+        )
+        free_bytes = shutil.disk_usage(root).free
+        plan = {
+            "scheme": args.grid_scheme,
+            "project": args.project,
+            "years": years,
+            "grid_count": len(grids),
+            "grids": [
+                {
+                    "grid_id": grid.grid_id,
+                    "crs": grid.crs,
+                    "width": grid.width,
+                    "height": grid.height,
+                    "output": str(outputs[grid.grid_id].resolve()),
+                }
+                for grid in grids
+            ],
+            "raw_bytes": raw_bytes,
+            "raw_gib": raw_bytes / 1024**3,
+            "free_bytes": free_bytes,
+            "free_gib": free_bytes / 1024**3,
+            "note": "raw_gib is uncompressed float32 size; lossless Zarr size depends on feature entropy",
+        }
+        print(json.dumps(plan, indent=2))
+        return
     ee = initialize(args.project, high_volume=args.high_volume)
     reports = []
     failures = []
     for index, grid in enumerate(grids, 1):
         print(f"Grid {index}/{len(grids)}: {grid.scheme}/{grid.grid_id}", flush=True)
+        emit_event(
+            "grid_start",
+            workflow="grid",
+            grid_id=grid.grid_id,
+            grid_index=index,
+            grid_total=len(grids),
+            crs=grid.crs,
+        )
         try:
-            reports.append(
-                _stream_one(
+            report = _stream_one(
                     args,
                     years,
                     grid,
@@ -537,6 +595,13 @@ def main() -> None:
                     catalog_path,
                     ee,
                 )
+            reports.append(report)
+            emit_event(
+                "grid_complete",
+                workflow="grid",
+                grid_id=grid.grid_id,
+                grid_index=index,
+                grid_total=len(grids),
             )
         except Exception as exc:
             failures.append({"grid_id": grid.grid_id, "error": str(exc)})
@@ -550,6 +615,7 @@ def main() -> None:
     }
     summary_root = args.out_dir or next(iter(outputs.values())).parent
     write_json(summary, summary_root / "run_summary.json")
+    emit_event("run_complete", workflow="grid", completed=len(reports), total=len(grids))
     if failures:
         raise RuntimeError(f"{len(failures)} of {len(grids)} grids failed")
 

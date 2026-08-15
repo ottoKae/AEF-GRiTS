@@ -57,6 +57,7 @@ dev = ["pytest>=8"]
 aef-grits-doctor = "aef_grits.doctor:main"
 aef-grits-points = "scripts.stream_aef_points_ee:main"
 aef-grits-grid = "scripts.stream_aef_grid_ee:main"
+aef-grits-storage-check = "scripts.check_aef_storage:main"
 
 [tool.setuptools.packages.find]
 include = ["aef_grits*", "scripts"]

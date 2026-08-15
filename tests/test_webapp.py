@@ -6,7 +6,6 @@ from pathlib import Path
 import sys
 import threading
 import time
-from types import SimpleNamespace
 
 import pytest
 import psutil
@@ -49,6 +48,15 @@ def test_grid_commands_preserve_selected_scheme(tmp_path):
     assert tessera[tessera.index("--grid-scheme") + 1] == "tessera_0p1"
     assert tessera[tessera.index("--tessera-tile") + 1 :] == ["117.05", "31.05"]
     assert "--tiles" not in tessera
+
+    safe = web._build_cmd(
+        _base_params(),
+        tmp_path / "final",
+        state_dir=tmp_path / "state",
+        staging_dir=tmp_path / "staging",
+    )
+    assert safe[safe.index("--state-dir") + 1] == str(tmp_path / "state")
+    assert safe[safe.index("--staging-dir") + 1] == str(tmp_path / "staging")
 
 
 def test_point_command_requires_and_passes_samples(tmp_path):
@@ -258,7 +266,7 @@ def test_large_plan_requires_exact_confirmation(isolated_runner, monkeypatch):
 
 
 def test_disk_preflight_can_block_start(isolated_runner, monkeypatch):
-    monkeypatch.setattr(web.shutil, "disk_usage", lambda _: SimpleNamespace(total=1, used=1, free=0))
+    monkeypatch.setattr(web, "isolated_disk_free", lambda *args, **kwargs: 0)
     payload = {
         "workflow": "grid",
         "gridScheme": "tessera_0p1",

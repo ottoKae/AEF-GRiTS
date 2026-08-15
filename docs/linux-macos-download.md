@@ -207,6 +207,12 @@ atomic-rename behavior; test a Tessera tile before committing to a large MGRS
 run. Keep at least the uncompressed plan estimate plus operational reserve when
 possible, even though the lossless Zarr product is normally smaller.
 
+Linux NTFS/NTFS3 must be treated as a completed-product destination, not an
+active Zarr work volume. Supply `--state-dir` and `--staging-dir` on ext4/XFS;
+the downloader enforces this policy. PID files and shell redirection logs must
+also be placed under the native state directory. Full recovery instructions
+are in [NTFS-safe operation and recovery](ntfs-safe-download.md).
+
 ## Updating and reproducing
 
 ```bash

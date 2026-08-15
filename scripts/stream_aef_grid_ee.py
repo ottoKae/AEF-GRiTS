@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 import sys
@@ -38,6 +39,12 @@ from aef_grits.grids import (  # noqa: E402
     MGRSGridProvider,
     ReferenceGridProvider,
     Tessera01GridProvider,
+)
+from aef_grits.storage_safety import (  # noqa: E402
+    adopt_existing_store,
+    commit_staged_tree,
+    mount_for_path,
+    validate_storage_layout,
 )
 
 
@@ -98,6 +105,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-retries", type=int, default=6)
     parser.add_argument("--checkpoint-every", type=int, default=8)
     parser.add_argument("--catalog", type=Path)
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        help="Native-filesystem root for checkpoints, catalogs and reports",
+    )
+    parser.add_argument(
+        "--staging-dir",
+        type=Path,
+        help="Native-filesystem root used to build each grid before final delivery",
+    )
+    parser.add_argument(
+        "--commit-timeout",
+        type=float,
+        default=21_600.0,
+        help="Maximum seconds allowed for the isolated final-store copy",
+    )
+    parser.add_argument(
+        "--keep-staging",
+        action="store_true",
+        help="Keep a successfully delivered native-filesystem staging copy",
+    )
+    parser.add_argument(
+        "--adopt-existing-complete",
+        action="store_true",
+        help="Finalize a legacy store only when its external ledger is already complete",
+    )
+    parser.add_argument(
+        "--import-legacy-progress",
+        type=Path,
+        help="One legacy progress JSON, or a directory containing per-store ledgers; never deleted",
+    )
     parser.add_argument("--high-volume", action="store_true")
     parser.add_argument(
         "--plan-only",
@@ -353,6 +391,8 @@ def _stream_one(
     grid_spec: GridSpec,
     output: Path,
     catalog_path: Path,
+    state_root: Path,
+    staging_root: Path | None,
     ee,
 ) -> dict:
     grid = grid_spec.as_dict()
@@ -365,39 +405,86 @@ def _stream_one(
         inner_chunk=args.inner_chunk,
         shard_size=args.shard_size,
     )
-    progress_path = output.with_name(f"{output.name}.progress.json")
+    grid_state = state_root / "grids" / grid_spec.grid_id
+    grid_state.mkdir(parents=True, exist_ok=True)
+    progress_path = grid_state / f"{output.name}.progress.json"
+    if not progress_path.exists() and args.import_legacy_progress is not None:
+        legacy = args.import_legacy_progress
+        if legacy.is_dir():
+            legacy = legacy / progress_path.name
+        imported = json.loads(legacy.read_text(encoding="utf-8"))
+        if imported.get("signature") != signature:
+            raise ValueError("Legacy progress signature differs from the requested store")
+        imported["imported_from"] = str(legacy)
+        imported["delivery_status"] = imported.get("delivery_status", "staging")
+        write_json(imported, progress_path)
     if progress_path.exists():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         if progress.get("signature") != signature:
             raise ValueError("Progress signature differs; use a new output path")
     else:
-        progress = {"signature": signature, "completed": []}
+        progress = {"signature": signature, "completed": [], "delivery_status": "staging"}
     completed = set(progress.get("completed", []))
-    store = _create_store(
-        output,
-        grid,
-        years,
-        signature,
-        args.inner_chunk,
-        args.shard_size,
-    )
-    target = store["embeddings"]
-    xmin, ymin, xmax, ymax = grid["bounds"]
-    bounds = ee.Geometry.Rectangle([xmin, ymin, xmax, ymax], proj=grid["crs"], geodesic=False)
-    images = {
-        year: annual_image(year, bounds).unmask(NODATA, sameFootprint=False)
-        for year in years
-    }
     all_blocks = list(_block_specs(grid, years, args.block_size))
+    already_committed = progress.get("delivery_status") == "committed"
+    if already_committed:
+        completed = {block["key"] for block in all_blocks}
+    work_output = (
+        staging_root / grid_spec.grid_id / output.name
+        if staging_root is not None
+        else output
+    )
+    adopting = False
+    if (
+        not already_committed
+        and args.adopt_existing_complete
+        and len(completed) == len(all_blocks)
+        and work_output != output
+    ):
+        adopt_existing_store(
+            output,
+            signature=signature,
+            expected_shape=(len(years), len(AEF_BANDS), grid["height"], grid["width"]),
+            state_dir=grid_state,
+            timeout_seconds=min(args.commit_timeout, 600.0),
+        )
+        already_committed = True
+        adopting = True
+    elif not already_committed and completed and not work_output.exists():
+        raise FileNotFoundError(
+            f"The external ledger records {len(completed)} blocks but the working "
+            f"store is missing: {work_output}. Restore staging, or use "
+            "--adopt-existing-complete only for a fully completed legacy store."
+        )
+    target = None
+    images = {}
+    if not already_committed:
+        store = _create_store(
+            work_output,
+            grid,
+            years,
+            signature,
+            args.inner_chunk,
+            args.shard_size,
+        )
+        target = store["embeddings"]
+        xmin, ymin, xmax, ymax = grid["bounds"]
+        bounds = ee.Geometry.Rectangle(
+            [xmin, ymin, xmax, ymax], proj=grid["crs"], geodesic=False
+        )
+        images = {
+            year: annual_image(year, bounds).unmask(NODATA, sameFootprint=False)
+            for year in years
+        }
     pending = [block for block in all_blocks if block["key"] not in completed]
     print(
         json.dumps(
             {
                 "scheme": grid_spec.scheme,
                 "grid_id": grid_spec.grid_id,
-                "shape": list(target.shape),
-                "zarr_chunks": list(target.chunks),
-                "zarr_shards": list(target.shards),
+                "shape": [len(years), len(AEF_BANDS), grid["height"], grid["width"]],
+                "zarr_chunks": [1, len(AEF_BANDS), args.inner_chunk, args.inner_chunk],
+                "zarr_shards": [1, len(AEF_BANDS), args.shard_size, args.shard_size],
                 "request_block": args.block_size,
                 "request_uncompressed_mb": request_bytes / 1e6,
                 "blocks_total": len(all_blocks),
@@ -440,6 +527,7 @@ def _stream_one(
                 active.pop(future)
                 block, values = future.result()
                 row, column = block["row"], block["column"]
+                assert target is not None
                 target[
                     block["time_index"],
                     :,
@@ -451,7 +539,13 @@ def _stream_one(
                 since_checkpoint += 1
                 if since_checkpoint >= args.checkpoint_every:
                     write_json(
-                        {"signature": signature, "completed": sorted(completed)},
+                        {
+                            "signature": signature,
+                            "completed": sorted(completed),
+                            "delivery_status": "staging",
+                            "working_store": str(work_output),
+                            "final_store": str(output),
+                        },
                         progress_path,
                     )
                     since_checkpoint = 0
@@ -475,17 +569,59 @@ def _stream_one(
                     rate_per_second=rate,
                 )
                 submit_next()
-    write_json({"signature": signature, "completed": sorted(completed)}, progress_path)
+    write_json(
+        {
+            "signature": signature,
+            "completed": sorted(completed),
+            "delivery_status": "staging",
+            "working_store": str(work_output),
+            "final_store": str(output),
+        },
+        progress_path,
+    )
     if len(completed) != len(all_blocks):
         raise RuntimeError("Run ended before every block was committed")
 
-    zarr.consolidate_metadata(str(output))
+    if not already_committed:
+        zarr.consolidate_metadata(str(work_output))
+    completion = {
+        "signature": signature,
+        "grid_id": grid_spec.grid_id,
+        "blocks": len(all_blocks),
+        "years": years,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if already_committed:
+        completion["reconciled_committed_store"] = True
+    elif work_output != output:
+        write_json(completion, work_output / "AEF_COMPLETE.json")
+        validate_storage_layout(output.parent, state_root, staging_root)
+        commit_staged_tree(
+            work_output,
+            output,
+            signature=signature,
+            state_dir=grid_state,
+            timeout_seconds=args.commit_timeout,
+        )
+    if adopting:
+        completion["adopted_legacy_store"] = True
+    write_json(
+        {
+            "signature": signature,
+            "completed": sorted(completed),
+            "delivery_status": "committed",
+            "legacy_adopted": adopting or bool(progress.get("legacy_adopted")),
+            "working_store": str(work_output),
+            "final_store": str(output),
+        },
+        progress_path,
+    )
     record = {
         "scheme": grid_spec.scheme,
         "grid_id": grid_spec.grid_id,
         "tile_id": grid_spec.grid_id,
         "product_type": "aef_annual",
-        "zarr_path": str(output.resolve()),
+        "zarr_path": os.path.abspath(output),
         "crs": grid["crs"],
         "transform": json.dumps(list(grid["transform"])[:6]),
         "width": grid["width"],
@@ -513,7 +649,13 @@ def _stream_one(
         "catalog": str(catalog_path.resolve()),
         "progress": str(progress_path.resolve()),
     }
-    write_json(report, output.with_name(f"{output.name}.report.json"))
+    report_path = grid_state / f"{output.name}.report.json"
+    report["report"] = str(report_path.resolve())
+    report["working_store"] = os.path.abspath(work_output)
+    report["adopted_legacy_store"] = adopting
+    write_json(report, report_path)
+    if work_output != output and work_output.exists() and not args.keep_staging:
+        shutil.rmtree(work_output)
     print(json.dumps(report, indent=2))
     return report
 
@@ -528,6 +670,8 @@ def main() -> None:
             raise ValueError(f"{name} must be positive")
     if args.shard_size % args.inner_chunk:
         raise ValueError("shard-size must be divisible by inner-chunk")
+    if args.commit_timeout <= 0:
+        raise ValueError("commit-timeout must be positive")
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
     if request_bytes > COMPUTE_PIXELS_LIMIT:
         raise ValueError(
@@ -537,14 +681,22 @@ def main() -> None:
 
     grids = resolve_grids(args)
     outputs = output_paths(grids, years, args.out, args.out_dir)
-    catalog_path = args.catalog or (
-        args.out_dir / "catalog.parquet"
-        if args.out_dir is not None
-        else next(iter(outputs.values())).parent / "catalog.parquet"
+    final_root = args.out_dir or next(iter(outputs.values())).parent
+    state_root = args.state_dir or final_root / ".aef_state"
+    layout = validate_storage_layout(
+        final_root,
+        state_root,
+        args.staging_dir,
     )
+    state_root = Path(layout.state_root)
+    staging_root = Path(layout.staging_root) if layout.staging_root else None
+    catalog_path = args.catalog or state_root / "catalog.parquet"
+    catalog_mount = mount_for_path(catalog_path)
+    if layout.final_mount and layout.final_mount.is_linux_ntfs:
+        if catalog_mount is None or catalog_mount.is_linux_ntfs:
+            raise ValueError("Catalog must be on the native --state-dir for NTFS output")
     if args.plan_only:
-        root = args.out_dir or next(iter(outputs.values())).parent
-        root.mkdir(parents=True, exist_ok=True)
+        root = staging_root or state_root
         raw_bytes = sum(
             len(years) * len(AEF_BANDS) * grid.width * grid.height * BYTES_PER_VALUE
             for grid in grids
@@ -569,6 +721,7 @@ def main() -> None:
             "raw_gib": raw_bytes / 1024**3,
             "free_bytes": free_bytes,
             "free_gib": free_bytes / 1024**3,
+            "storage_layout": layout.as_dict(),
             "note": "raw_gib is uncompressed float32 size; lossless Zarr size depends on feature entropy",
         }
         print(json.dumps(plan, indent=2))
@@ -588,13 +741,15 @@ def main() -> None:
         )
         try:
             report = _stream_one(
-                    args,
-                    years,
-                    grid,
-                    outputs[grid.grid_id],
-                    catalog_path,
-                    ee,
-                )
+                args,
+                years,
+                grid,
+                outputs[grid.grid_id],
+                catalog_path,
+                state_root,
+                staging_root,
+                ee,
+            )
             reports.append(report)
             emit_event(
                 "grid_complete",
@@ -613,8 +768,8 @@ def main() -> None:
         "failed": failures,
         "catalog": str(catalog_path.resolve()),
     }
-    summary_root = args.out_dir or next(iter(outputs.values())).parent
-    write_json(summary, summary_root / "run_summary.json")
+    summary["storage_layout"] = layout.as_dict()
+    write_json(summary, state_root / "run_summary.json")
     emit_event("run_complete", workflow="grid", completed=len(reports), total=len(grids))
     if failures:
         raise RuntimeError(f"{len(failures)} of {len(grids)} grids failed")

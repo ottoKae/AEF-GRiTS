@@ -1,5 +1,11 @@
 # Data organization
 
+The layouts below describe direct native-filesystem output. With a Linux NTFS
+destination, immutable Parquet/Zarr products keep the same layout, while the
+authoritative catalog, progress ledger and reports live under `--state-dir`;
+active stores remain under `--staging-dir` until delivery completes. See
+[NTFS-safe operation](ntfs-safe-download.md).
+
 Generated data are intentionally excluded from Git. The recommended local tree is:
 
 ```text

@@ -114,8 +114,8 @@ preflight rather than silently converted.
   children from a previous server instance, terminates them, and marks the task
   `interrupted`.
 - Each task writes an atomic `task.json`, append-only `run.log`, and structured
-  `events.jsonl` under `webapp/runs/<run_id>/`. The final reproducibility record
-  is saved as `<output_dir>/web_task_report.json` beside the products.
+  `events.jsonl` under its native state directory. The final reproducibility
+  record is saved there as `download_state/web_task_report.json`.
 - Progress events contain workflow, grid/chunk counters, rates, and ETA where
   available. The browser retains only the latest 1,000 lines; the full log
   remains available from the task card.
@@ -132,6 +132,8 @@ Optional environment variables:
 
 | Variable | Default | Purpose |
 |---|---:|---|
+| `AEF_GRITS_WEB_STATE` | `webapp/runs` | native-filesystem plans, PID, logs, checkpoints and reports |
+| `AEF_GRITS_WEB_STAGING` | unset | native-filesystem per-task staging root; required for Linux NTFS output |
 | `AEF_GRITS_WEB_OUTPUT` | `webapp/output` | authoritative output root |
 | `AEF_GRITS_WEB_CONCURRENCY` | `2` | maximum simultaneous subprocesses |
 | `AEF_GRITS_WEB_MAX_QUEUE` | `20` | maximum waiting tasks |
@@ -143,6 +145,12 @@ Optional environment variables:
 | `AEF_GRITS_WEB_DISK_RESERVE_GIB` | `2` | free-space reserve after planned work |
 | `AEF_GRITS_WEB_PLAN_TTL` | `3600` | signed plan lifetime in seconds |
 | `AEF_GRITS_WEB_PLAN_SECRET` | local persistent secret | optional explicit signing secret |
+
+When `AEF_GRITS_WEB_OUTPUT` is on Linux NTFS/NTFS3, both `AEF_GRITS_WEB_STATE`
+and `AEF_GRITS_WEB_STAGING` must point to ext4/XFS (or another native local
+filesystem). The server refuses to start new work when it can see a related
+uninterruptible D-state process. Active control files and the authoritative
+catalog never use NTFS; only completed products are delivered there.
 
 The output field accepts a relative subdirectory only. Absolute paths and `..`
 are rejected, so a browser request cannot write outside the configured output

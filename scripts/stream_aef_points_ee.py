@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import sys
 import time
 
@@ -40,6 +41,7 @@ from aef_grits.points import (  # noqa: E402
     raise_for_invalid_points,
     validate_point_table,
 )
+from aef_grits.storage_safety import commit_staged_tree, validate_storage_layout  # noqa: E402
 
 
 EVENT_PREFIX = "AEF_EVENT "
@@ -93,6 +95,18 @@ def parse_args() -> argparse.Namespace:
         help="GeoTIFF or AEF Zarr defining centres for interior_pixels",
     )
     parser.add_argument("--max-points", type=int, default=1_000_000)
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        help="Native-filesystem root for validation, run state and reports",
+    )
+    parser.add_argument(
+        "--staging-dir",
+        type=Path,
+        help="Native-filesystem root used before immutable final delivery",
+    )
+    parser.add_argument("--commit-timeout", type=float, default=21_600.0)
+    parser.add_argument("--keep-staging", action="store_true")
     return parser.parse_args()
 
 
@@ -242,12 +256,19 @@ def main() -> None:
     args = parse_args()
     if args.page_size <= 0 or args.workers <= 0 or args.max_retries < 0:
         raise ValueError("page-size/workers must be positive and max-retries non-negative")
+    if args.commit_timeout <= 0:
+        raise ValueError("commit-timeout must be positive")
     if not math.isclose(args.scale, AEF_RESOLUTION_M):
         raise ValueError(
             f"AEF point sampling is fixed at {AEF_RESOLUTION_M:g} m; "
             f"received --scale {args.scale:g}"
         )
     years = sorted(set(args.years))
+    final_out = args.out_dir
+    state_root = args.state_dir or final_out / ".aef_state"
+    layout = validate_storage_layout(final_out, state_root, args.staging_dir)
+    state_root = Path(layout.state_root)
+    staging_root = Path(layout.staging_root) if layout.staging_root else None
     frame = load_point_source(
         args.samples,
         layer=args.layer,
@@ -263,16 +284,24 @@ def main() -> None:
         rows=len(frame),
         total_chunks=validation.get("estimated_shards"),
     )
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    signature = _signature(frame, years, args)
+    work_out = (
+        staging_root / f"points-{signature[:12]}" if staging_root is not None else final_out
+    )
+    work_out.mkdir(parents=True, exist_ok=True)
     validation.update(
         {
             "source": str(args.samples.resolve()),
-            "output_directory": str(args.out_dir.resolve()),
+            "output_directory": os.path.abspath(final_out),
+            "working_directory": str(work_out.resolve()),
+            "state_directory": str(state_root.resolve()),
             "geometry_mode": args.geometry_mode,
             "validate_only": bool(args.validate_only),
         }
     )
-    write_json(validation, args.out_dir / "validation_report.json")
+    write_json(validation, state_root / "validation_report.json")
+    if work_out == final_out:
+        write_json(validation, work_out / "validation_report.json")
     print(json.dumps(validation, indent=2, ensure_ascii=False))
     raise_for_invalid_points(validation)
     if args.validate_only:
@@ -280,11 +309,25 @@ def main() -> None:
     if not args.project:
         raise ValueError("--project is required for an Earth Engine download")
 
-    shard_dir = args.out_dir / "shards"
+    delivery_path = state_root / "delivery.json"
+    if delivery_path.exists() and not args.overwrite:
+        delivery = json.loads(delivery_path.read_text(encoding="utf-8"))
+        if delivery.get("signature") != signature:
+            raise ValueError("Existing point delivery has a different signature")
+        if delivery.get("delivery_status") != "committed":
+            delivery = None
+    else:
+        delivery = None
+    if delivery is not None:
+        report_path = state_root / "report.json"
+        if not report_path.exists():
+            raise FileNotFoundError("Completed delivery exists but its native report is missing")
+        print(report_path.read_text(encoding="utf-8"))
+        return
+    shard_dir = work_out / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     columns = feature_columns(years)
-    signature = _signature(frame, years, args)
-    run_path = args.out_dir / "run.json"
+    run_path = state_root / "run.json"
     if run_path.exists() and not args.overwrite:
         previous = json.loads(run_path.read_text(encoding="utf-8"))
         if previous.get("signature") != signature:
@@ -352,7 +395,13 @@ def main() -> None:
     catalog["years"] = json.dumps(years)
     catalog["feature_count"] = len(columns)
     catalog["updated_at"] = datetime.now(timezone.utc).isoformat()
-    write_parquet(catalog, args.out_dir / "catalog.parquet")
+    if work_out != final_out:
+        catalog["path"] = catalog["path"].map(
+            lambda value: os.path.abspath(final_out / "shards" / Path(value).name)
+        )
+    write_parquet(catalog, state_root / "catalog.parquet")
+    if work_out == final_out:
+        write_parquet(catalog, work_out / "catalog.parquet")
     report = {
         "signature": signature,
         "sample_count": len(frame),
@@ -360,9 +409,50 @@ def main() -> None:
         "complete_rows": int(catalog.complete_rows.sum()),
         "incomplete_rows": int(len(frame) - catalog.complete_rows.sum()),
         "elapsed_seconds": time.perf_counter() - started,
-        "catalog": str((args.out_dir / "catalog.parquet").resolve()),
+        "catalog": str((state_root / "catalog.parquet").resolve()),
+        "final_output": os.path.abspath(final_out),
+        "working_output": str(work_out.resolve()),
     }
-    write_json(report, args.out_dir / "report.json")
+    write_json(report, state_root / "report.json")
+    if work_out == final_out:
+        write_json(report, work_out / "report.json")
+        write_json(
+            {"signature": signature, "delivery_status": "committed", "final_output": str(final_out)},
+            state_root / "delivery.json",
+        )
+    else:
+        write_json(
+            {"signature": signature, "workflow": "points", "complete_rows": report["complete_rows"]},
+            work_out / "AEF_COMPLETE.json",
+        )
+        write_json(
+            {
+                "signature": signature,
+                "delivery_status": "staging_complete",
+                "working_output": str(work_out),
+                "final_output": str(final_out),
+            },
+            state_root / "delivery.json",
+        )
+        validate_storage_layout(final_out, state_root, staging_root)
+        commit_staged_tree(
+            work_out,
+            final_out,
+            signature=signature,
+            state_dir=state_root,
+            timeout_seconds=args.commit_timeout,
+        )
+        write_json(
+            {
+                "signature": signature,
+                "delivery_status": "committed",
+                "working_output": str(work_out),
+                "final_output": str(final_out),
+            },
+            state_root / "delivery.json",
+        )
+        if not args.keep_staging:
+            shutil.rmtree(work_out)
     print(json.dumps(report, indent=2))
     emit_event("run_complete", workflow="points", completed=len(catalog), total=len(jobs))
 

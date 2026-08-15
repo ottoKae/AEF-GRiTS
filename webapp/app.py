@@ -36,19 +36,28 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aef_grits.earth_engine import AEF_FIRST_YEAR, AEF_LAST_YEAR, DATASET
+from aef_grits.atomic import write_json, write_text
 from aef_grits.resources import BUILTIN_MGRS_INDEX
 from aef_grits.grid_lookup import resolve_mgrs, resolve_tessera
 from aef_grits.grids import MGRSGridProvider, Tessera01GridProvider
 from aef_grits.points import load_point_source, validate_point_table
+from aef_grits.storage_safety import isolated_disk_free, validate_storage_layout
 
 
 APP_DIR = Path(__file__).resolve().parent
-RUNS_DIR = APP_DIR / "runs"
+RUNS_DIR = Path(
+    os.environ.get("AEF_GRITS_WEB_STATE", str(APP_DIR / "runs"))
+).expanduser().absolute()
 OUTPUT_ROOT = Path(
     os.environ.get("AEF_GRITS_WEB_OUTPUT", str(APP_DIR / "output"))
-).expanduser().resolve()
+).expanduser().absolute()
+STAGING_ROOT = (
+    Path(os.environ["AEF_GRITS_WEB_STAGING"]).expanduser().absolute()
+    if os.environ.get("AEF_GRITS_WEB_STAGING")
+    else None
+)
 STATIC_DIR = APP_DIR / "static"
-SERVER_PID_PATH = APP_DIR / "server.pid"
+SERVER_PID_PATH = RUNS_DIR / "server.pid"
 MAX_CONCURRENT_TASKS = max(1, int(os.environ.get("AEF_GRITS_WEB_CONCURRENCY", "2")))
 MAX_QUEUED_TASKS = max(0, int(os.environ.get("AEF_GRITS_WEB_MAX_QUEUE", "20")))
 MAX_GRID_COUNT = max(1, int(os.environ.get("AEF_GRITS_WEB_MAX_GRIDS", "500")))
@@ -58,13 +67,16 @@ WARN_RAW_BYTES = int(float(os.environ.get("AEF_GRITS_WEB_WARN_RAW_GIB", "10")) *
 DISK_FACTOR = max(0.0, float(os.environ.get("AEF_GRITS_WEB_DISK_FACTOR", "1.0")))
 DISK_RESERVE_BYTES = int(float(os.environ.get("AEF_GRITS_WEB_DISK_RESERVE_GIB", "2")) * 1024**3)
 PLAN_TTL_SECONDS = max(60, int(os.environ.get("AEF_GRITS_WEB_PLAN_TTL", "3600")))
+VALIDATION_TIMEOUT_SECONDS = max(
+    10, int(os.environ.get("AEF_GRITS_WEB_VALIDATION_TIMEOUT", "300"))
+)
 POINT_SUFFIXES = {".csv", ".parquet", ".shp", ".gpkg", ".geojson", ".json"}
 TERMINAL_STATUSES = {"done", "failed", "error", "cancelled", "interrupted"}
 PROGRESS_PATTERN = re.compile(r"\[(\d+)\s*/\s*(\d+)\]")
 GRID_ID_PATTERN = re.compile(r'"grid_id"\s*:\s*"([^"]+)"')
 EVENT_PREFIX = "AEF_EVENT "
 
-RUNS_DIR.mkdir(parents=True, exist_ok=True)
+STORAGE_LAYOUT = validate_storage_layout(OUTPUT_ROOT, RUNS_DIR, STAGING_ROOT)
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 PLANS_DIR = RUNS_DIR / "plans"
 PLANS_DIR.mkdir(parents=True, exist_ok=True)
@@ -100,9 +112,7 @@ def _plan_secret() -> str:
     if path.exists():
         return path.read_text(encoding="utf-8").strip()
     value = secrets.token_urlsafe(48)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(value, encoding="utf-8")
-    os.replace(temporary, path)
+    write_text(value, path)
     return value
 
 
@@ -159,6 +169,8 @@ def _public_task(run_id_value: str, task: dict[str, Any]) -> dict[str, Any]:
         "grid_crs": plan.get("grid_crs", []),
         "raw_gib": plan.get("raw_gib"),
         "output_dir": str(task.get("output_dir", "")),
+        "download_state_dir": str(task.get("download_state_dir", "")),
+        "staging_dir": str(task.get("staging_dir", "")) if task.get("staging_dir") else "",
         "exit_code": task.get("exit_code"),
         "error": task.get("error"),
         "pid": task.get("pid"),
@@ -213,11 +225,7 @@ def _persist_task(run_id_value: str) -> None:
             "provenance": task.get("provenance"),
             "command": task.get("command"),
         }
-    target = _task_manifest(run_id_value)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, target)
+    write_json(payload, _task_manifest(run_id_value))
 
 
 def _matching_process(pid: Any, create_time: Any = None) -> psutil.Process | None:
@@ -239,12 +247,19 @@ def _terminate_process_tree(
     *,
     grace_seconds: float = 5.0,
 ) -> bool:
-    """Terminate an exact process identity and all descendants, then escalate."""
+    """Terminate one exact process tree, but never signal a D-state member."""
     process = _matching_process(pid, create_time)
     if process is None:
         return True
     try:
         descendants = process.children(recursive=True)
+        tree = [*descendants, process]
+        for member in tree:
+            try:
+                if member.status() == psutil.STATUS_DISK_SLEEP:
+                    return False
+            except psutil.Error:
+                continue
         for child in reversed(descendants):
             try:
                 child.terminate()
@@ -292,6 +307,12 @@ def _load_tasks() -> None:
                 "status": status,
                 "log_path": manifest.parent / "run.log",
                 "output_dir": Path(payload.get("output_dir", OUTPUT_ROOT / rid)),
+                "download_state_dir": Path(
+                    payload.get("download_state_dir") or manifest.parent / "download_state"
+                ),
+                "staging_dir": (
+                    Path(payload["staging_dir"]) if payload.get("staging_dir") else None
+                ),
                 "cancel_event": threading.Event(),
                 "grid_progress": {},
             }
@@ -628,7 +649,16 @@ def _provenance() -> dict[str, Any]:
 def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
     raw_bytes = int(plan.get("raw_bytes", 0))
     disk_required = int(raw_bytes * DISK_FACTOR) + DISK_RESERVE_BYTES
-    free_bytes = shutil.disk_usage(OUTPUT_ROOT).free
+    validate_storage_layout(OUTPUT_ROOT, RUNS_DIR, STAGING_ROOT)
+    incident = RUNS_DIR / "filesystem_incident.json"
+    free_bytes = isolated_disk_free(
+        OUTPUT_ROOT, timeout_seconds=10, incident_path=incident
+    )
+    staging_free = (
+        isolated_disk_free(STAGING_ROOT, timeout_seconds=10, incident_path=incident)
+        if STAGING_ROOT is not None
+        else free_bytes
+    )
     blocked_reasons = []
     if raw_bytes > MAX_RAW_BYTES:
         blocked_reasons.append(
@@ -640,6 +670,26 @@ def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
             f"Free disk {free_bytes / 1024**3:.2f} GiB is below the required "
             f"{disk_required / 1024**3:.2f} GiB"
         )
+    if STAGING_ROOT is not None:
+        per_grid_raw = max(
+            (
+                int(grid.get("width", 0))
+                * int(grid.get("height", 0))
+                * len(plan.get("years", []))
+                * 64
+                * 4
+                for grid in plan.get("grids", [])
+            ),
+            default=raw_bytes,
+        )
+        staging_required = int(per_grid_raw * DISK_FACTOR) + DISK_RESERVE_BYTES
+        if staging_free < staging_required:
+            blocked_reasons.append(
+                f"Staging free space {staging_free / 1024**3:.2f} GiB is below "
+                f"the largest-grid requirement {staging_required / 1024**3:.2f} GiB"
+            )
+    else:
+        staging_required = disk_required
     strong_confirmation = raw_bytes >= WARN_RAW_BYTES
     phrase = f"DOWNLOAD {raw_bytes / 1024**3:.2f} GiB" if strong_confirmation else ""
     return {
@@ -648,6 +698,11 @@ def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "disk_free_gib": free_bytes / 1024**3,
         "disk_required_bytes": disk_required,
         "disk_required_gib": disk_required / 1024**3,
+        "staging_free_bytes": staging_free,
+        "staging_free_gib": staging_free / 1024**3,
+        "staging_required_bytes": staging_required,
+        "staging_required_gib": staging_required / 1024**3,
+        "storage_layout": STORAGE_LAYOUT.as_dict(),
         "hard_limit_bytes": MAX_RAW_BYTES,
         "hard_limit_gib": MAX_RAW_BYTES / 1024**3,
         "can_start": not blocked_reasons,
@@ -671,10 +726,7 @@ def _write_plan(params: dict[str, Any], plan: dict[str, Any], plan_dir: Path | N
     }
     digest = _json_digest(record)
     record["digest"] = digest
-    target = plan_dir / "plan.json"
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, target)
+    write_json(record, plan_dir / "plan.json")
     token = _plan_serializer.dumps({"plan_id": plan_id_value, "digest": digest})
     return {**enriched, "plan_id": token, "expires_in_seconds": PLAN_TTL_SECONDS}
 
@@ -714,13 +766,16 @@ def _consume_plan(plan_dir: Path, record: dict[str, Any], rid: str) -> None:
     record["status"] = "consumed"
     record["consumed_at"] = _now()
     record["run_id"] = rid
-    target = plan_dir / "plan.json"
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, target)
+    write_json(record, plan_dir / "plan.json")
 
 
-def _build_cmd(params: dict[str, Any], output_dir: Path) -> list[str]:
+def _build_cmd(
+    params: dict[str, Any],
+    output_dir: Path,
+    *,
+    state_dir: Path | None = None,
+    staging_dir: Path | None = None,
+) -> list[str]:
     years = [str(year) for year in params["years"]]
     if params["workflow"] == "grid":
         cmd = [
@@ -750,6 +805,10 @@ def _build_cmd(params: dict[str, Any], output_dir: Path) -> list[str]:
                 cmd.extend(["--tessera-tile", str(selection["lon"]), str(selection["lat"])])
         else:
             cmd.extend(["--reference", params["reference_path"], "--tile-id", params["tile_id"]])
+        if state_dir is not None:
+            cmd.extend(["--state-dir", str(state_dir)])
+        if staging_dir is not None:
+            cmd.extend(["--staging-dir", str(staging_dir)])
         return cmd
 
     cmd = [
@@ -778,6 +837,10 @@ def _build_cmd(params: dict[str, Any], output_dir: Path) -> list[str]:
         cmd.extend(["--layer", params["layer"]])
     if params["reference_grid"]:
         cmd.extend(["--reference-grid", params["reference_grid"]])
+    if state_dir is not None:
+        cmd.extend(["--state-dir", str(state_dir)])
+    if staging_dir is not None:
+        cmd.extend(["--staging-dir", str(staging_dir)])
     return cmd
 
 
@@ -852,18 +915,19 @@ def _update_progress(rid: str, line: str) -> None:
             _persist_task(rid)
 
 
-def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
+def _validate_task_outputs_in_process(task: dict[str, Any]) -> dict[str, Any]:
     """Validate lightweight structural invariants without loading raster values."""
     import pandas as pd
 
     output_dir = Path(task["output_dir"]).resolve()
+    control_dir = Path(task.get("download_state_dir") or output_dir).resolve()
     params = task["params"]
     errors: list[str] = []
     warnings: list[str] = []
     summary: dict[str, Any] = {"workflow": params["workflow"], "output_dir": str(output_dir)}
     if params["workflow"] == "points":
-        report_path = output_dir / "report.json"
-        catalog_path = output_dir / "catalog.parquet"
+        report_path = control_dir / "report.json"
+        catalog_path = control_dir / "catalog.parquet"
         if not report_path.exists():
             errors.append("Missing point report.json")
         if not catalog_path.exists():
@@ -898,8 +962,8 @@ def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
     else:
         import xarray as xr
 
-        report_path = output_dir / "run_summary.json"
-        catalog_path = output_dir / "catalog.parquet"
+        report_path = control_dir / "run_summary.json"
+        catalog_path = control_dir / "catalog.parquet"
         if not report_path.exists():
             errors.append("Missing grid run_summary.json")
         if not catalog_path.exists():
@@ -964,6 +1028,74 @@ def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
         "warnings": warnings,
         "validated_at": _now(),
     }
+
+
+def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
+    """Validate final products in a disposable process, never a Web thread."""
+    state_dir = Path(task.get("download_state_dir") or task["output_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    input_path = state_dir / "validation_input.json"
+    result_path = state_dir / "validation_result.json"
+    output_dir = Path(task["output_dir"]).absolute()
+    write_json(
+        {
+            "output_dir": str(output_dir),
+            "control_dir": str(state_dir.absolute()),
+            "params": task["params"],
+        },
+        input_path,
+    )
+    command = [
+        PYTHON_BIN,
+        "-m",
+        "aef_grits.delivery_validation",
+        "--input",
+        str(input_path),
+        "--output",
+        str(result_path),
+        "--final",
+        str(output_dir),
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=ROOT,
+    )
+    started = time.monotonic()
+    while process.poll() is None:
+        if time.monotonic() - started > VALIDATION_TIMEOUT_SECONDS:
+            incident = {
+                "workflow": task["params"]["workflow"],
+                "output_dir": str(output_dir),
+                "valid": False,
+                "errors": [
+                    "Product validation timed out in an isolated process; "
+                    "stop new work and inspect the final filesystem"
+                ],
+                "warnings": [],
+                "validation_pid": process.pid,
+                "validated_at": _now(),
+            }
+            write_json(incident, result_path)
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            return incident
+        time.sleep(0.1)
+    _, stderr = process.communicate()
+    if process.returncode:
+        return {
+            "workflow": task["params"]["workflow"],
+            "output_dir": str(output_dir),
+            "valid": False,
+            "errors": [f"Isolated product validation failed: {stderr.strip()}"],
+            "warnings": [],
+            "validated_at": _now(),
+        }
+    return json.loads(result_path.read_text(encoding="utf-8"))
 
 
 def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
@@ -1037,12 +1169,8 @@ def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
                     "provenance": task.get("provenance"),
                     "command": task.get("command"),
                 }
-                report_path = Path(task["output_dir"]) / "web_task_report.json"
-                temporary = report_path.with_suffix(".json.tmp")
-                temporary.write_text(
-                    json.dumps(web_report, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                os.replace(temporary, report_path)
+                report_path = Path(task["download_state_dir"]) / "web_task_report.json"
+                write_json(web_report, report_path)
                 with _task_lock:
                     task = _tasks[rid]
                     task["validation"] = validation
@@ -1479,7 +1607,11 @@ def create_task() -> Response:
                 raise ValueError("Validated point upload is missing")
             shutil.move(str(source_input), str(target_input))
             params["samples_path"] = str(target_input / Path(params["samples_path"]).name)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        download_state_dir = run_dir / "download_state"
+        download_state_dir.mkdir(parents=True)
+        task_staging_dir = STAGING_ROOT / rid if STAGING_ROOT is not None else None
+        if task_staging_dir is None:
+            output_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "run.log"
         task = {
             "status": "queued",
@@ -1490,6 +1622,8 @@ def create_task() -> Response:
             "plan": plan,
             "log_path": log_path,
             "output_dir": output_dir,
+            "download_state_dir": download_state_dir,
+            "staging_dir": task_staging_dir,
             "cancel_event": threading.Event(),
             "grid_progress": {},
             "plan_id": plan_dir.name,
@@ -1498,7 +1632,12 @@ def create_task() -> Response:
         with _task_lock:
             _tasks[rid] = task
             _persist_task(rid)
-        cmd = _build_cmd(params, output_dir)
+        cmd = _build_cmd(
+            params,
+            output_dir,
+            state_dir=download_state_dir,
+            staging_dir=task_staging_dir,
+        )
         with _task_lock:
             task["command"] = cmd
             _persist_task(rid)
@@ -1641,7 +1780,10 @@ def _finish_cancellation(rid: str, pid: int, create_time: float | None) -> None:
         with _task_lock:
             task = _tasks.get(rid)
             if task is not None:
-                task["error"] = "The process tree did not stop after forced termination"
+                task["error"] = (
+                    "The process tree was not stopped. A member may be in "
+                    "uninterruptible disk sleep; no repeated kill was attempted."
+                )
                 _persist_task(rid)
 
 

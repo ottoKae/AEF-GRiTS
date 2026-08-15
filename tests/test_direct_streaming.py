@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from affine import Affine
@@ -23,7 +25,9 @@ from scripts.stream_aef_grid_ee import (
     DEFAULT_SHARD_SIZE,
     _create_store,
     _pixel_grid,
+    _stream_one,
 )
+import scripts.stream_aef_grid_ee as grid_stream
 
 
 def test_production_zarr_layout_defaults(tmp_path):
@@ -215,3 +219,87 @@ def test_local_store_samples_centred_patches_with_edge_padding(tmp_path):
         store.sample_patches(
             [(centre_x, centre_y)], patch_size=2, years=[2025], crs="EPSG:32717"
         )
+
+
+def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, monkeypatch):
+    grid = GridSpec(
+        scheme="reference",
+        grid_id="TEST",
+        crs="EPSG:32717",
+        transform=Affine(10, 0, 500_000, 0, -10, 10_000_000),
+        width=16,
+        height=16,
+        bounds=(500_000, 9_999_840, 500_160, 10_000_000),
+    )
+
+    class FakeImage:
+        def unmask(self, *args, **kwargs):
+            return self
+
+    class FakeGeometry:
+        @staticmethod
+        def Rectangle(*args, **kwargs):
+            return object()
+
+    class FakeData:
+        @staticmethod
+        def computePixels(request):
+            height = request["grid"]["dimensions"]["height"]
+            width = request["grid"]["dimensions"]["width"]
+            return {
+                band: np.full((height, width), index, dtype=np.float32)
+                for index, band in enumerate(grid_stream.AEF_BANDS)
+            }
+
+    fake_ee = SimpleNamespace(Geometry=FakeGeometry, data=FakeData)
+    monkeypatch.setattr(grid_stream, "annual_image", lambda *args, **kwargs: FakeImage())
+    args = SimpleNamespace(
+        block_size=8,
+        inner_chunk=4,
+        shard_size=8,
+        max_retries=0,
+        workers=2,
+        checkpoint_every=2,
+        commit_timeout=30,
+        adopt_existing_complete=False,
+        import_legacy_progress=None,
+        keep_staging=False,
+    )
+    final = tmp_path / "final" / "tile.zarr"
+    state = tmp_path / "state"
+    staging = tmp_path / "staging"
+    report = _stream_one(
+        args,
+        [2025],
+        grid,
+        final,
+        state / "catalog.parquet",
+        state,
+        staging,
+        fake_ee,
+    )
+    assert final.is_dir()
+    assert (final / "AEF_COMPLETE.json").is_file()
+    assert not (staging / "TEST" / "tile.zarr").exists()
+    assert Path(report["catalog"]).is_file()
+    progress = json.loads(Path(report["progress"]).read_text(encoding="utf-8"))
+    assert progress["delivery_status"] == "committed"
+    assert len(progress["completed"]) == 4
+    array = zarr.open_group(str(final), mode="r")["embeddings"]
+    assert array.shape == (1, 64, 16, 16)
+    assert np.isfinite(array[:]).all()
+
+    progress["delivery_status"] = "staging"
+    Path(report["progress"]).write_text(json.dumps(progress), encoding="utf-8")
+    args.adopt_existing_complete = True
+    adopted = _stream_one(
+        args,
+        [2025],
+        grid,
+        final,
+        state / "catalog.parquet",
+        state,
+        staging,
+        fake_ee,
+    )
+    assert adopted["adopted_legacy_store"] is True

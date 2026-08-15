@@ -137,6 +137,29 @@ aef-grits-grid \
 An arbitrary 10 m GeoTIFF can define a `reference` grid. Run
 `aef-grits-grid --help` for all grid modes and tuning options.
 
+### Linux NTFS delivery targets
+
+Do not run a Zarr download directly on a Linux `ntfs3` mount. Use native ext4
+or XFS directories for active state and one-grid staging, and use NTFS only as
+the completed-product destination:
+
+```bash
+aef-grits-grid \
+  --grid-scheme mgrs --tiles 50RMU \
+  --project YOUR_GEE_PROJECT --years 2019 \
+  --out-dir /mnt/hdda/user/anhui_mgrs_2019 \
+  --state-dir /home/user/aef_state/anhui_mgrs_2019 \
+  --staging-dir /home/user/aef_staging/anhui_mgrs_2019
+```
+
+On Linux, the command detects the output filesystem before touching it. An
+NTFS/NTFS3 final path is rejected unless both control state and staging are on
+a non-NTFS mount. Downloads write one block at a time to staging; an isolated
+single-writer process then delivers one completed store to NTFS. A copy timeout
+records an incident on the state volume and performs no automatic deletion.
+See [NTFS-safe operation and recovery](docs/ntfs-safe-download.md) or the
+[Chinese guide](docs/ntfs-safe-download.zh-CN.md).
+
 ## Resolve grid IDs from an AOI
 
 Convert a Shapefile, GeoPackage, GeoJSON, or GeoParquet AOI into deterministic
@@ -181,6 +204,8 @@ Zarr reads are decompressed automatically through the standard Zarr API.
 
 - Point shards and metadata are committed atomically.
 - Dense grids save block checkpoints and resume compatible outputs.
+- Linux NTFS is final-delivery-only; checkpoints, catalogs, reports, PID files,
+  logs, and active Zarr writes remain on a native filesystem.
 - Existing outputs are protected by request signatures.
 - The Web app uses signed one-use plans, bounded queues, process-tree control,
   disk limits, and automatic product validation.

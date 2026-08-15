@@ -42,11 +42,18 @@ the reboot in the current state.
 
 ## Verification
 
-`69 passed` on Windows with Python 3.12. The suite includes a synthetic
+The current cross-platform suite is `69 passed, 1 POSIX-only test skipped` on
+Windows and `64 passed` on Ubuntu 24.04/ext4. The suite includes a synthetic
 end-to-end grid transfer, external committed ledger, atomic control files,
 stale-temporary preservation, D-state detection, NTFS layout rejection,
 isolated disk query, non-destructive duplicate destination handling, and all
-pre-existing point/grid/Web tests.
+pre-existing point/grid/Web tests. Linux fault injection also verifies that a
+hanging `rsync` and its Python parent are terminated as one isolated process
+group without leaving an orphan. See `linux-download-validation-20260815.md`.
+
+At 2026-08-15 16:56 CST, SSH still closed the TCP connection before sending a
+protocol banner. The `raokeyi` account therefore never reached authentication;
+its sudo/reboot policy could not yet be queried or used.
 
 ## Remaining server actions
 

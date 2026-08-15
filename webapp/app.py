@@ -41,7 +41,11 @@ from aef_grits.resources import BUILTIN_MGRS_INDEX
 from aef_grits.grid_lookup import resolve_mgrs, resolve_tessera
 from aef_grits.grids import MGRSGridProvider, Tessera01GridProvider
 from aef_grits.points import load_point_source, validate_point_table
-from aef_grits.storage_safety import isolated_disk_free, validate_storage_layout
+from aef_grits.storage_safety import (
+    isolated_disk_free,
+    terminate_process_group_once,
+    validate_storage_layout,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -77,7 +81,8 @@ GRID_ID_PATTERN = re.compile(r'"grid_id"\s*:\s*"([^"]+)"')
 EVENT_PREFIX = "AEF_EVENT "
 
 STORAGE_LAYOUT = validate_storage_layout(OUTPUT_ROOT, RUNS_DIR, STAGING_ROOT)
-OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+if not (STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs):
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 PLANS_DIR = RUNS_DIR / "plans"
 PLANS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -576,8 +581,8 @@ def _safe_output_dir(name: str, rid: str) -> Path:
     candidate = Path(name)
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("Output must be a relative folder name under the configured output root")
-    resolved = (OUTPUT_ROOT / candidate).resolve()
-    if resolved == OUTPUT_ROOT or OUTPUT_ROOT not in resolved.parents:
+    resolved = Path(os.path.abspath(OUTPUT_ROOT / candidate))
+    if resolved == OUTPUT_ROOT or os.path.commonpath([resolved, OUTPUT_ROOT]) != str(OUTPUT_ROOT):
         raise ValueError("Output folder must stay inside the configured output root")
     return resolved
 
@@ -587,8 +592,8 @@ def _safe_output_browser_dir(name: str = "") -> Path:
     candidate = Path(name or ".")
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("Output browser path must be relative to the configured output root")
-    resolved = (OUTPUT_ROOT / candidate).resolve()
-    if resolved != OUTPUT_ROOT and OUTPUT_ROOT not in resolved.parents:
+    resolved = Path(os.path.abspath(OUTPUT_ROOT / candidate))
+    if os.path.commonpath([resolved, OUTPUT_ROOT]) != str(OUTPUT_ROOT):
         raise ValueError("Output browser path must stay inside the configured output root")
     return resolved
 
@@ -1062,6 +1067,7 @@ def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
         stderr=subprocess.PIPE,
         text=True,
         cwd=ROOT,
+        start_new_session=os.name == "posix",
     )
     started = time.monotonic()
     while process.poll() is None:
@@ -1079,10 +1085,7 @@ def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
                 "validated_at": _now(),
             }
             write_json(incident, result_path)
-            try:
-                process.terminate()
-            except OSError:
-                pass
+            terminate_process_group_once(process)
             return incident
         time.sleep(0.1)
     _, stderr = process.communicate()
@@ -1427,6 +1430,21 @@ def capabilities() -> Response:
 def output_directories() -> Response:
     """List server-side output folders without exposing paths outside the root."""
     try:
+        if STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs:
+            return jsonify(
+                {
+                    "output_root": str(OUTPUT_ROOT),
+                    "path": "",
+                    "parent": None,
+                    "directories": [],
+                    "read_only": True,
+                    "note": (
+                        "Directory browsing is disabled for Linux NTFS output to keep "
+                        "the web service out of uninterruptible kernel I/O. Enter a "
+                        "relative output name; the isolated delivery worker creates it."
+                    ),
+                }
+            )
         current = _safe_output_browser_dir(str(request.args.get("path", "")))
         if not current.exists() or not current.is_dir():
             raise ValueError("Selected output directory does not exist")
@@ -1464,6 +1482,16 @@ def output_directories() -> Response:
 def create_output_directory() -> Response:
     """Create one named output subdirectory below a safely resolved parent."""
     try:
+        if STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs:
+            return jsonify(
+                {
+                    "error": (
+                        "Direct directory creation is disabled for Linux NTFS output; "
+                        "enter the relative name and let the isolated delivery worker "
+                        "create it after download validation"
+                    )
+                }
+            ), 409
         body = request.get_json(silent=True) or {}
         parent = _safe_output_browser_dir(str(body.get("parent", "")))
         name = str(body.get("name", "")).strip()
@@ -1592,7 +1620,7 @@ def create_task() -> Response:
         output_dir = _safe_output_dir(params["output_name"], rid)
         with _task_lock:
             collision = any(
-                Path(task.get("output_dir", "")).resolve() == output_dir
+                Path(os.path.abspath(task.get("output_dir", ""))) == output_dir
                 and task.get("status") in {"queued", "running", "cancelling", "validating_output"}
                 for task in _tasks.values()
             )

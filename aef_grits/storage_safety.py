@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -22,6 +23,28 @@ from aef_grits.atomic import write_json
 
 NTFS_TYPES = frozenset({"ntfs", "ntfs3", "fuseblk"})
 NATIVE_STAGING_TYPES = frozenset({"ext2", "ext3", "ext4", "xfs", "btrfs", "apfs"})
+
+
+def terminate_process_group_once(process: subprocess.Popen) -> None:
+    """Request one bounded shutdown of an isolated worker process group.
+
+    The caller deliberately does not wait indefinitely: a worker blocked in
+    uninterruptible kernel I/O cannot be reaped safely by retrying signals.
+    """
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except (OSError, ProcessLookupError):
+        pass
+    # Reap a normally terminating worker without ever waiting indefinitely for
+    # kernel I/O.  A genuine D-state process remains recorded for operators.
+    deadline = time.monotonic() + 0.25
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        time.sleep(0.025)
 
 
 @dataclass(frozen=True)
@@ -230,6 +253,7 @@ def isolated_disk_free(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=os.name == "posix",
     )
     started = time.monotonic()
     while process.poll() is None:
@@ -245,10 +269,7 @@ def isolated_disk_free(
                     },
                     incident_path,
                 )
-            try:
-                process.terminate()
-            except OSError:
-                pass
+            terminate_process_group_once(process)
             raise TimeoutError(
                 f"Disk-space probe timed out for {path}; no new write should start"
             )
@@ -276,7 +297,7 @@ def _run_commit_process(
         "--signature",
         signature,
     ]
-    process = subprocess.Popen(command)
+    process = subprocess.Popen(command, start_new_session=os.name == "posix")
     started = time.monotonic()
     while process.poll() is None:
         if time.monotonic() - started > timeout_seconds:
@@ -291,10 +312,7 @@ def _run_commit_process(
                 },
                 incident_path,
             )
-            try:
-                process.terminate()
-            except OSError:
-                pass
+            terminate_process_group_once(process)
             raise TimeoutError(
                 f"Final-store copy exceeded {timeout_seconds:g}s; incident recorded "
                 f"at {incident_path}. No cleanup was attempted."
@@ -352,7 +370,7 @@ def adopt_existing_store(
         "--shape",
         *(str(value) for value in expected_shape),
     ]
-    process = subprocess.Popen(command)
+    process = subprocess.Popen(command, start_new_session=os.name == "posix")
     started = time.monotonic()
     while process.poll() is None:
         if time.monotonic() - started > timeout_seconds:
@@ -366,10 +384,7 @@ def adopt_existing_store(
                 },
                 incident,
             )
-            try:
-                process.terminate()
-            except OSError:
-                pass
+            terminate_process_group_once(process)
             raise TimeoutError(f"Legacy-store adoption timed out for {path}")
         time.sleep(0.1)
     if process.returncode:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import time
 
 import pandas as pd
 import pytest
@@ -121,3 +123,33 @@ def test_ntfs_layout_refuses_visible_d_state(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="D-state"):
         validate_storage_layout(final, state, staging, mounts=mounts)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression test")
+def test_commit_timeout_terminates_the_isolated_process_group(tmp_path, monkeypatch):
+    source = tmp_path / "stage" / "tile.zarr"
+    source.mkdir(parents=True)
+    (source / "zarr.json").write_text("{}", encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    fake_rsync.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="incident recorded"):
+        commit_staged_tree(
+            source,
+            tmp_path / "final" / "tile.zarr",
+            signature="timeout123456789",
+            state_dir=state,
+            timeout_seconds=0.5,
+        )
+    assert time.monotonic() - started < 3.0
+    incident = json.loads((state / "commit_incident.json").read_text(encoding="utf-8"))
+    assert incident["status"] == "copy_timeout"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(incident["pid"]), 0)

@@ -14,6 +14,8 @@ import sys
 import tempfile
 from typing import Any
 
+from aef_grits.storage_safety import isolated_disk_free, mount_for_path
+
 
 PACKAGE_GROUPS = {
     "point": (
@@ -104,20 +106,36 @@ def run_checks(
         except Exception as exc:
             _record(checks, f"package:{distribution}", "fail", str(exc))
 
-    output = output.expanduser().resolve()
+    output = output.expanduser().absolute()
     try:
-        output.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(prefix=".aef-grits-write-", dir=output, delete=True) as stream:
-            stream.write(b"ok")
-            stream.flush()
-        usage = shutil.disk_usage(output)
-        free_gib = usage.free / 1024**3
-        status = "pass" if free_gib >= minimum_free_gib else "fail"
+        output_mount = mount_for_path(output)
+        if output_mount and output_mount.is_linux_ntfs:
+            free_gib = isolated_disk_free(output, timeout_seconds=10) / 1024**3
+            status = "warn" if free_gib >= minimum_free_gib else "fail"
+            detail = (
+                f"Linux NTFS capacity reachable in isolated probe; free={free_gib:.2f} GiB; "
+                f"required>={minimum_free_gib:.2f} GiB. Use native --state-dir and "
+                "--staging-dir; final writes are performed by an isolated worker."
+            )
+        else:
+            output.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                prefix=".aef-grits-write-", dir=output, delete=True
+            ) as stream:
+                stream.write(b"ok")
+                stream.flush()
+            usage = shutil.disk_usage(output)
+            free_gib = usage.free / 1024**3
+            status = "pass" if free_gib >= minimum_free_gib else "fail"
+            detail = (
+                f"writable={output}; free={free_gib:.2f} GiB; "
+                f"required>={minimum_free_gib:.2f} GiB"
+            )
         _record(
             checks,
             "output",
             status,
-            f"writable={output}; free={free_gib:.2f} GiB; required>={minimum_free_gib:.2f} GiB",
+            detail,
         )
     except OSError as exc:
         _record(checks, "output", "fail", str(exc))

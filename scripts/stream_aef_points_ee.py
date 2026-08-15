@@ -9,7 +9,7 @@ chunk is committed atomically and can be resumed independently.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -41,7 +41,19 @@ from aef_grits.points import (  # noqa: E402
     raise_for_invalid_points,
     validate_point_table,
 )
-from aef_grits.storage_safety import commit_staged_tree, validate_storage_layout  # noqa: E402
+from aef_grits.resource_budget import (  # noqa: E402
+    DEFAULT_GLOBAL_REQUESTS,
+    MemoryGuard,
+    ResourceLimitError,
+    memory_snapshot,
+    plan_point_resources,
+)
+from aef_grits.resource_control import TokenPool, default_resource_root  # noqa: E402
+from aef_grits.storage_safety import (  # noqa: E402
+    commit_staged_tree,
+    mount_for_path,
+    validate_storage_layout,
+)
 
 
 EVENT_PREFIX = "AEF_EVENT "
@@ -77,7 +89,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-size", type=int, default=1_000)
     parser.add_argument("--scale", type=float, default=10.0)
     parser.add_argument("--tile-scale", type=int, default=8)
-    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--workers", default="auto", help="Positive integer or auto")
+    parser.add_argument("--memory-limit-gib", default="auto")
+    parser.add_argument("--memory-reserve-gib", default="auto")
+    parser.add_argument("--global-request-limit", type=int, default=DEFAULT_GLOBAL_REQUESTS)
+    parser.add_argument("--memory-high-watermark", type=float, default=0.80)
+    parser.add_argument("--memory-critical-watermark", type=float, default=0.90)
+    parser.add_argument("--resource-state-dir", type=Path)
     parser.add_argument("--max-retries", type=int, default=6)
     parser.add_argument("--high-volume", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -148,6 +166,7 @@ def _request_chunk(
     tile_scale: int,
     page_size: int,
     max_retries: int,
+    request_pool,
 ) -> pd.DataFrame:
     bounds = _bounds(ee, frame)
     image = multiyear_image(years, bounds)
@@ -170,14 +189,15 @@ def _request_chunk(
     error: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            return ee.data.computeFeatures(
-                {
-                    "expression": sampled,
-                    "fileFormat": "PANDAS_DATAFRAME",
-                    "pageSize": page_size,
-                    "workloadTag": "aef_grits_points",
-                }
-            )
+            with request_pool.token():
+                return ee.data.computeFeatures(
+                    {
+                        "expression": sampled,
+                        "fileFormat": "PANDAS_DATAFRAME",
+                        "pageSize": page_size,
+                        "workloadTag": "aef_grits_points",
+                    }
+                )
         except Exception as exc:  # Earth Engine exposes several transient classes.
             error = exc
             if attempt >= max_retries:
@@ -194,6 +214,7 @@ def _complete_chunk(
     columns: list[str],
     args: argparse.Namespace,
     shard_path: Path,
+    request_pool,
 ) -> dict:
     if shard_path.exists() and not args.overwrite:
         existing = pd.read_parquet(shard_path)
@@ -220,6 +241,7 @@ def _complete_chunk(
         tile_scale=args.tile_scale,
         page_size=args.page_size,
         max_retries=args.max_retries,
+        request_pool=request_pool,
     )
     if "sample_id" not in remote:
         raise ValueError("Earth Engine response has no sample_id")
@@ -254,10 +276,12 @@ def _complete_chunk(
 
 def main() -> None:
     args = parse_args()
-    if args.page_size <= 0 or args.workers <= 0 or args.max_retries < 0:
-        raise ValueError("page-size/workers must be positive and max-retries non-negative")
+    if args.page_size <= 0 or args.max_retries < 0:
+        raise ValueError("page-size must be positive and max-retries non-negative")
     if args.commit_timeout <= 0:
         raise ValueError("commit-timeout must be positive")
+    if args.global_request_limit <= 0:
+        raise ValueError("global-request-limit must be positive")
     if not math.isclose(args.scale, AEF_RESOLUTION_M):
         raise ValueError(
             f"AEF point sampling is fixed at {AEF_RESOLUTION_M:g} m; "
@@ -278,6 +302,34 @@ def main() -> None:
         max_points=args.max_points,
     )
     frame, validation = validate_point_table(frame, years, chunk_size=args.chunk_size)
+    snapshot = memory_snapshot(
+        limit_gib=args.memory_limit_gib,
+        reserve_gib=args.memory_reserve_gib,
+    )
+    resource_plan = plan_point_resources(
+        chunk_size=args.chunk_size,
+        years=len(years),
+        workers=args.workers,
+        snapshot=snapshot,
+        global_request_limit=args.global_request_limit,
+        high_watermark=args.memory_high_watermark,
+        critical_watermark=args.memory_critical_watermark,
+    )
+    args.workers = resource_plan.workers
+    memory_guard = MemoryGuard(resource_plan)
+    resource_root = args.resource_state_dir or default_resource_root(state_root)
+    resource_root = Path(resource_root).expanduser().absolute()
+    resource_mount = mount_for_path(resource_root)
+    if resource_mount and resource_mount.is_linux_ntfs:
+        raise ValueError("Shared resource state must be on a native filesystem")
+    if layout.final_mount and layout.final_mount.is_linux_ntfs and resource_mount is None:
+        raise ValueError("Cannot verify the shared resource-state filesystem for NTFS output")
+    resource_root.mkdir(parents=True, exist_ok=True)
+    request_pool = TokenPool(
+        resource_root / "earth_engine",
+        resource_plan.global_request_limit,
+        name="request",
+    )
     emit_event(
         "preflight_complete",
         workflow="points",
@@ -297,6 +349,9 @@ def main() -> None:
             "state_directory": str(state_root.resolve()),
             "geometry_mode": args.geometry_mode,
             "validate_only": bool(args.validate_only),
+            "memory": snapshot.as_dict(),
+            "resource_plan": resource_plan.as_dict(),
+            "resource_state_dir": str(resource_root),
         }
     )
     write_json(validation, state_root / "validation_report.json")
@@ -350,45 +405,68 @@ def main() -> None:
     )
 
     ee = initialize(args.project, high_volume=args.high_volume)
-    jobs = []
-    for chunk_id, start in enumerate(range(0, len(frame), args.chunk_size), 1):
-        stop = min(len(frame), start + args.chunk_size)
-        jobs.append(
-            (
-                chunk_id,
-                frame.iloc[start:stop].copy(),
-                shard_dir / f"part{chunk_id:05d}.parquet",
-            )
-        )
-
     started = time.perf_counter()
     records: list[dict] = []
+    total_jobs = int(math.ceil(len(frame) / args.chunk_size))
+    chunk_iterator = iter(enumerate(range(0, len(frame), args.chunk_size), 1))
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {
-            executor.submit(
-                _complete_chunk, ee, chunk_id, chunk, years, columns, args, path
-            ): chunk_id
-            for chunk_id, chunk, path in jobs
-        }
-        for completed, future in enumerate(as_completed(futures), 1):
-            record = future.result()
-            records.append(record)
-            elapsed = time.perf_counter() - started
-            print(
-                f"[{completed}/{len(jobs)}] chunk={record['chunk']} "
-                f"rows={record['rows']} complete={record['complete_rows']} "
-                f"status={record['status']} elapsed={elapsed:.1f}s",
-                flush=True,
+        active = {}
+
+        def submit_next() -> bool:
+            pressure = memory_guard.sample()
+            if pressure == "critical":
+                raise ResourceLimitError("Critical memory watermark reached; completed shards are resumable")
+            if pressure == "high" and active:
+                return False
+            try:
+                chunk_id, start = next(chunk_iterator)
+            except StopIteration:
+                return False
+            stop = min(len(frame), start + args.chunk_size)
+            chunk = frame.iloc[start:stop].copy()
+            path = shard_dir / f"part{chunk_id:05d}.parquet"
+            future = executor.submit(
+                _complete_chunk,
+                ee,
+                chunk_id,
+                chunk,
+                years,
+                columns,
+                args,
+                path,
+                request_pool,
             )
-            emit_event(
-                "progress",
-                workflow="points",
-                completed=completed,
-                total=len(jobs),
-                chunk=record["chunk"],
-                complete_rows=record["complete_rows"],
-                elapsed_seconds=elapsed,
-            )
+            active[future] = chunk_id
+            return True
+
+        for _ in range(resource_plan.max_in_flight):
+            if not submit_next():
+                break
+        completed_count = 0
+        while active:
+            done, _ = wait(active, return_when=FIRST_COMPLETED)
+            for future in done:
+                active.pop(future)
+                record = future.result()
+                records.append(record)
+                completed_count += 1
+                elapsed = time.perf_counter() - started
+                print(
+                    f"[{completed_count}/{total_jobs}] chunk={record['chunk']} "
+                    f"rows={record['rows']} complete={record['complete_rows']} "
+                    f"status={record['status']} elapsed={elapsed:.1f}s",
+                    flush=True,
+                )
+                emit_event(
+                    "progress",
+                    workflow="points",
+                    completed=completed_count,
+                    total=total_jobs,
+                    chunk=record["chunk"],
+                    complete_rows=record["complete_rows"],
+                    elapsed_seconds=elapsed,
+                )
+                submit_next()
 
     catalog = pd.DataFrame(sorted(records, key=lambda value: value["chunk"]))
     catalog["signature"] = signature
@@ -412,6 +490,9 @@ def main() -> None:
         "catalog": str((state_root / "catalog.parquet").resolve()),
         "final_output": os.path.abspath(final_out),
         "working_output": str(work_out.resolve()),
+        "memory": snapshot.as_dict(),
+        "resource_plan": resource_plan.as_dict(),
+        **memory_guard.report(),
     }
     write_json(report, state_root / "report.json")
     if work_out == final_out:
@@ -441,6 +522,7 @@ def main() -> None:
             signature=signature,
             state_dir=state_root,
             timeout_seconds=args.commit_timeout,
+            resource_root=resource_root,
         )
         write_json(
             {
@@ -454,7 +536,7 @@ def main() -> None:
         if not args.keep_staging:
             shutil.rmtree(work_out)
     print(json.dumps(report, indent=2))
-    emit_event("run_complete", workflow="points", completed=len(catalog), total=len(jobs))
+    emit_event("run_complete", workflow="points", completed=len(catalog), total=total_jobs)
 
 
 if __name__ == "__main__":

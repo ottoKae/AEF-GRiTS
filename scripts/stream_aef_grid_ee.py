@@ -40,6 +40,14 @@ from aef_grits.grids import (  # noqa: E402
     ReferenceGridProvider,
     Tessera01GridProvider,
 )
+from aef_grits.resource_budget import (  # noqa: E402
+    DEFAULT_GLOBAL_REQUESTS,
+    MemoryGuard,
+    ResourceLimitError,
+    memory_snapshot,
+    plan_grid_resources,
+)
+from aef_grits.resource_control import TokenPool, default_resource_root  # noqa: E402
 from aef_grits.storage_safety import (  # noqa: E402
     adopt_existing_store,
     commit_staged_tree,
@@ -101,7 +109,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, default=256)
     parser.add_argument("--inner-chunk", type=int, default=DEFAULT_INNER_CHUNK)
     parser.add_argument("--shard-size", type=int, default=DEFAULT_SHARD_SIZE)
-    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--workers", default="auto", help="Positive integer or auto")
+    parser.add_argument("--memory-limit-gib", default="auto")
+    parser.add_argument("--memory-reserve-gib", default="auto")
+    parser.add_argument("--global-request-limit", type=int, default=DEFAULT_GLOBAL_REQUESTS)
+    parser.add_argument(
+        "--resource-state-dir",
+        type=Path,
+        help="Native shared root for cross-process request tokens and delivery lock",
+    )
+    parser.add_argument("--memory-high-watermark", type=float, default=0.80)
+    parser.add_argument("--memory-critical-watermark", type=float, default=0.90)
     parser.add_argument("--max-retries", type=int, default=6)
     parser.add_argument("--checkpoint-every", type=int, default=8)
     parser.add_argument("--catalog", type=Path)
@@ -259,7 +277,7 @@ def _pixel_grid(grid: dict, block: dict) -> dict:
     }
 
 
-def _fetch_block(ee, image, grid: dict, block: dict, max_retries: int):
+def _fetch_block(ee, image, grid: dict, block: dict, max_retries: int, request_pool):
     request = {
         "expression": image,
         "fileFormat": "NUMPY_NDARRAY",
@@ -270,7 +288,8 @@ def _fetch_block(ee, image, grid: dict, block: dict, max_retries: int):
     error: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            response = ee.data.computePixels(request)
+            with request_pool.token():
+                response = ee.data.computePixels(request)
             values = np.stack(
                 [np.asarray(response[band], dtype=np.float32) for band in AEF_BANDS]
             )
@@ -394,8 +413,25 @@ def _stream_one(
     state_root: Path,
     staging_root: Path | None,
     ee,
+    resource_plan=None,
+    request_pool=None,
+    resource_root=None,
 ) -> dict:
     grid = grid_spec.as_dict()
+    if resource_plan is None:
+        resource_plan = plan_grid_resources(
+            block_size=args.block_size,
+            workers=args.workers,
+            snapshot=memory_snapshot(),
+        )
+    if resource_root is None:
+        resource_root = default_resource_root(state_root)
+    if request_pool is None:
+        request_pool = TokenPool(
+            Path(resource_root) / "earth_engine",
+            resource_plan.global_request_limit,
+            name="request",
+        )
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
     signature = _signature(
         grid,
@@ -425,6 +461,7 @@ def _stream_one(
     else:
         progress = {"signature": signature, "completed": [], "delivery_status": "staging"}
     completed = set(progress.get("completed", []))
+    memory_guard = MemoryGuard(resource_plan)
     all_blocks = list(_block_specs(grid, years, args.block_size))
     already_committed = progress.get("delivery_status") == "committed"
     if already_committed:
@@ -502,6 +539,22 @@ def _stream_one(
         active = {}
 
         def submit_next() -> bool:
+            pressure = memory_guard.sample()
+            if pressure == "critical":
+                write_json(
+                    {
+                        "signature": signature,
+                        "completed": sorted(completed),
+                        "delivery_status": "staging",
+                        "working_store": str(work_output),
+                        "final_store": str(output),
+                        "resource_limit_stop": True,
+                    },
+                    progress_path,
+                )
+                raise ResourceLimitError("Critical memory watermark reached; checkpoint saved")
+            if pressure == "high" and active:
+                return False
             try:
                 block = next(iterator)
             except StopIteration:
@@ -513,11 +566,12 @@ def _stream_one(
                 grid,
                 block,
                 args.max_retries,
+                request_pool,
             )
             active[future] = block
             return True
 
-        for _ in range(max(1, args.workers * 2)):
+        for _ in range(resource_plan.max_in_flight):
             if not submit_next():
                 break
         written = 0
@@ -602,6 +656,7 @@ def _stream_one(
             signature=signature,
             state_dir=grid_state,
             timeout_seconds=args.commit_timeout,
+            resource_root=resource_root,
         )
     if adopting:
         completion["adopted_legacy_store"] = True
@@ -653,6 +708,8 @@ def _stream_one(
     report["report"] = str(report_path.resolve())
     report["working_store"] = os.path.abspath(work_output)
     report["adopted_legacy_store"] = adopting
+    report["resource_plan"] = resource_plan.as_dict()
+    report.update(memory_guard.report())
     write_json(report, report_path)
     if work_output != output and work_output.exists() and not args.keep_staging:
         shutil.rmtree(work_output)
@@ -665,13 +722,15 @@ def main() -> None:
     years = sorted(set(args.years))
     if not years:
         raise ValueError("At least one year is required")
-    for name in ("block_size", "inner_chunk", "shard_size", "workers", "checkpoint_every"):
+    for name in ("block_size", "inner_chunk", "shard_size", "checkpoint_every"):
         if getattr(args, name) <= 0:
             raise ValueError(f"{name} must be positive")
     if args.shard_size % args.inner_chunk:
         raise ValueError("shard-size must be divisible by inner-chunk")
     if args.commit_timeout <= 0:
         raise ValueError("commit-timeout must be positive")
+    if args.global_request_limit <= 0:
+        raise ValueError("global-request-limit must be positive")
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
     if request_bytes > COMPUTE_PIXELS_LIMIT:
         raise ValueError(
@@ -679,6 +738,19 @@ def main() -> None:
             "Earth Engine computePixels allows at most 48 MB uncompressed"
         )
 
+    snapshot = memory_snapshot(
+        limit_gib=args.memory_limit_gib,
+        reserve_gib=args.memory_reserve_gib,
+    )
+    resource_plan = plan_grid_resources(
+        block_size=args.block_size,
+        workers=args.workers,
+        snapshot=snapshot,
+        global_request_limit=args.global_request_limit,
+        high_watermark=args.memory_high_watermark,
+        critical_watermark=args.memory_critical_watermark,
+    )
+    args.workers = resource_plan.workers
     grids = resolve_grids(args)
     outputs = output_paths(grids, years, args.out, args.out_dir)
     final_root = args.out_dir or next(iter(outputs.values())).parent
@@ -690,6 +762,19 @@ def main() -> None:
     )
     state_root = Path(layout.state_root)
     staging_root = Path(layout.staging_root) if layout.staging_root else None
+    resource_root = args.resource_state_dir or default_resource_root(state_root)
+    resource_root = Path(resource_root).expanduser().absolute()
+    resource_mount = mount_for_path(resource_root)
+    if resource_mount and resource_mount.is_linux_ntfs:
+        raise ValueError("Shared resource state must be on a native filesystem")
+    if layout.final_mount and layout.final_mount.is_linux_ntfs and resource_mount is None:
+        raise ValueError("Cannot verify the shared resource-state filesystem for NTFS output")
+    resource_root.mkdir(parents=True, exist_ok=True)
+    request_pool = TokenPool(
+        resource_root / "earth_engine",
+        resource_plan.global_request_limit,
+        name="request",
+    )
     catalog_path = args.catalog or state_root / "catalog.parquet"
     catalog_mount = mount_for_path(catalog_path)
     if layout.final_mount and layout.final_mount.is_linux_ntfs:
@@ -722,6 +807,9 @@ def main() -> None:
             "free_bytes": free_bytes,
             "free_gib": free_bytes / 1024**3,
             "storage_layout": layout.as_dict(),
+            "memory": snapshot.as_dict(),
+            "resource_plan": resource_plan.as_dict(),
+            "resource_state_dir": str(resource_root),
             "note": "raw_gib is uncompressed float32 size; lossless Zarr size depends on feature entropy",
         }
         print(json.dumps(plan, indent=2))
@@ -749,6 +837,9 @@ def main() -> None:
                 state_root,
                 staging_root,
                 ee,
+                resource_plan,
+                request_pool,
+                resource_root,
             )
             reports.append(report)
             emit_event(
@@ -769,6 +860,9 @@ def main() -> None:
         "catalog": str(catalog_path.resolve()),
     }
     summary["storage_layout"] = layout.as_dict()
+    summary["memory"] = snapshot.as_dict()
+    summary["resource_plan"] = resource_plan.as_dict()
+    summary["resource_state_dir"] = str(resource_root)
     write_json(summary, state_root / "run_summary.json")
     emit_event("run_complete", workflow="grid", completed=len(reports), total=len(grids))
     if failures:

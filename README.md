@@ -160,6 +160,25 @@ records an incident on the state volume and performs no automatic deletion.
 See [NTFS-safe operation and recovery](docs/ntfs-safe-download.md) or the
 [Chinese guide](docs/ntfs-safe-download.zh-CN.md).
 
+### Memory-bounded concurrency
+
+Grid and point commands accept `--workers auto` and detect the smaller of host
+available memory, Linux cgroup headroom, and an optional
+`--memory-limit-gib`. Requests use a bounded in-flight queue; the point workflow
+does not materialize every chunk future. Multiple CLI/Web jobs share a
+cross-process Earth Engine request-token pool, while completed products share
+one exclusive final-delivery lock.
+
+For independently launched jobs, configure one native shared resource root:
+
+```bash
+export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
+```
+
+Plans and reports record the resolved workers, estimated peak memory, actual
+peak RSS, and throttle count. See
+[resource-bounded downloads](docs/resource-bounded-download.md).
+
 ## Resolve grid IDs from an AOI
 
 Convert a Shapefile, GeoPackage, GeoJSON, or GeoParquet AOI into deterministic

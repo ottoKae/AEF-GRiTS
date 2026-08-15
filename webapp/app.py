@@ -41,8 +41,15 @@ from aef_grits.resources import BUILTIN_MGRS_INDEX
 from aef_grits.grid_lookup import resolve_mgrs, resolve_tessera
 from aef_grits.grids import MGRSGridProvider, Tessera01GridProvider
 from aef_grits.points import load_point_source, validate_point_table
+from aef_grits.resource_budget import (
+    DEFAULT_GLOBAL_REQUESTS,
+    memory_snapshot,
+    plan_grid_resources,
+    plan_point_resources,
+)
 from aef_grits.storage_safety import (
     isolated_disk_free,
+    mount_for_path,
     terminate_process_group_once,
     validate_storage_layout,
 )
@@ -74,6 +81,16 @@ PLAN_TTL_SECONDS = max(60, int(os.environ.get("AEF_GRITS_WEB_PLAN_TTL", "3600"))
 VALIDATION_TIMEOUT_SECONDS = max(
     10, int(os.environ.get("AEF_GRITS_WEB_VALIDATION_TIMEOUT", "300"))
 )
+GLOBAL_REQUEST_LIMIT = max(
+    1, int(os.environ.get("AEF_GRITS_WEB_GLOBAL_REQUESTS", str(DEFAULT_GLOBAL_REQUESTS)))
+)
+WEB_MEMORY_SNAPSHOT = memory_snapshot(
+    limit_gib=os.environ.get("AEF_GRITS_WEB_MEMORY_GIB", "auto"),
+    reserve_gib=os.environ.get("AEF_GRITS_WEB_MEMORY_RESERVE_GIB", "auto"),
+)
+RESOURCE_STATE_ROOT = Path(
+    os.environ.get("AEF_GRITS_RESOURCE_STATE", str(RUNS_DIR / ".resource_locks"))
+).expanduser().absolute()
 POINT_SUFFIXES = {".csv", ".parquet", ".shp", ".gpkg", ".geojson", ".json"}
 TERMINAL_STATUSES = {"done", "failed", "error", "cancelled", "interrupted"}
 PROGRESS_PATTERN = re.compile(r"\[(\d+)\s*/\s*(\d+)\]")
@@ -81,6 +98,12 @@ GRID_ID_PATTERN = re.compile(r'"grid_id"\s*:\s*"([^"]+)"')
 EVENT_PREFIX = "AEF_EVENT "
 
 STORAGE_LAYOUT = validate_storage_layout(OUTPUT_ROOT, RUNS_DIR, STAGING_ROOT)
+_resource_mount = mount_for_path(RESOURCE_STATE_ROOT)
+if _resource_mount and _resource_mount.is_linux_ntfs:
+    raise ValueError("AEF_GRITS_RESOURCE_STATE must be on a native filesystem")
+if STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs and _resource_mount is None:
+    raise ValueError("Cannot verify AEF_GRITS_RESOURCE_STATE for NTFS output")
+RESOURCE_STATE_ROOT.mkdir(parents=True, exist_ok=True)
 if not (STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs):
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 PLANS_DIR = RUNS_DIR / "plans"
@@ -138,6 +161,31 @@ _executor = ThreadPoolExecutor(
     thread_name_prefix="aef-web-worker",
 )
 _submission_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TASKS + MAX_QUEUED_TASKS)
+
+
+class _MemoryAdmission:
+    def __init__(self, capacity_bytes: int):
+        self.capacity_bytes = int(capacity_bytes)
+        self.used_bytes = 0
+        self.condition = threading.Condition()
+
+    def acquire(self, amount: int, cancel_event: threading.Event) -> bool:
+        amount = int(amount)
+        with self.condition:
+            while self.used_bytes + amount > self.capacity_bytes:
+                if cancel_event.is_set():
+                    return False
+                self.condition.wait(timeout=0.25)
+            self.used_bytes += amount
+            return True
+
+    def release(self, amount: int) -> None:
+        with self.condition:
+            self.used_bytes = max(0, self.used_bytes - int(amount))
+            self.condition.notify_all()
+
+
+_memory_admission = _MemoryAdmission(WEB_MEMORY_SNAPSHOT.usable_bytes)
 
 
 def run_id() -> str:
@@ -512,6 +560,8 @@ def _normalize_params(body: dict[str, Any]) -> dict[str, Any]:
         "checkpoint_every": _as_int(body.get("checkpointInterval") or body.get("checkpoint_every"), "checkpoint_every", 8, 1, 10000),
         "max_retries": _as_int(body.get("maxRetries") or body.get("max_retries"), "max_retries", 6, 0, 20),
         "workers": _as_int(body.get("workers"), "workers", 2 if workflow == "grid" else 1, 1, 8),
+        "chunk_size": _as_int(body.get("chunkSize") or body.get("chunk_size"), "chunk_size", 1000, 1, 10000),
+        "page_size": _as_int(body.get("pageSize") or body.get("page_size"), "page_size", 1000, 1, 10000),
         "output_name": str(body.get("output") or "").strip(),
         "reference_path": str(body.get("referencePath") or body.get("reference_path") or "").strip(),
         "tile_id": str(body.get("tileId") or body.get("tile_id") or "").strip(),
@@ -548,6 +598,13 @@ def _plan_grid(params: dict[str, Any]) -> dict[str, Any]:
     )
     params["grid_ids"] = [selection["grid_id"] for selection in selections]
     params["grid_selections"] = selections
+    resources = plan_grid_resources(
+        block_size=params["block_size"],
+        workers=params["workers"],
+        snapshot=WEB_MEMORY_SNAPSHOT,
+        global_request_limit=GLOBAL_REQUEST_LIMIT,
+    )
+    params["resolved_workers"] = resources.workers
     return {
         "workflow": "grid",
         "grid_scheme": params["grid_scheme"],
@@ -572,6 +629,8 @@ def _plan_grid(params: dict[str, Any]) -> dict[str, Any]:
         "raw_bytes": raw_bytes,
         "raw_gib": raw_bytes / 1024**3,
         "note": "Storage after lossless compression depends on local feature entropy.",
+        "resource_plan": resources.as_dict(),
+        "memory": WEB_MEMORY_SNAPSHOT.as_dict(),
     }
 
 
@@ -797,7 +856,11 @@ def _build_cmd(
             "--block-size",
             str(params["block_size"]),
             "--workers",
-            str(params["workers"]),
+            str(params.get("resolved_workers", params["workers"])),
+            "--global-request-limit",
+            str(GLOBAL_REQUEST_LIMIT),
+            "--resource-state-dir",
+            str(RESOURCE_STATE_ROOT),
             "--max-retries",
             str(params["max_retries"]),
             "--checkpoint-every",
@@ -828,9 +891,17 @@ def _build_cmd(
         "--years",
         *years,
         "--workers",
-        str(params["workers"]),
+        str(params.get("resolved_workers", params["workers"])),
+        "--global-request-limit",
+        str(GLOBAL_REQUEST_LIMIT),
+        "--resource-state-dir",
+        str(RESOURCE_STATE_ROOT),
         "--max-retries",
         str(params["max_retries"]),
+        "--chunk-size",
+        str(params.get("chunk_size", 1000)),
+        "--page-size",
+        str(params.get("page_size", 1000)),
         "--geometry-mode",
         params["geometry_mode"],
         "--max-points",
@@ -1102,6 +1173,7 @@ def _validate_task_outputs(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
+    admitted_bytes = 0
     try:
         with _task_lock:
             task = _tasks[rid]
@@ -1112,11 +1184,30 @@ def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
                 task["finished_at"] = _now()
                 _persist_task(rid)
                 return
+            admitted_bytes = int(
+                (task.get("plan", {}).get("resource_plan") or {}).get(
+                    "estimated_peak_bytes", 256 * 1024**2
+                )
+            )
+            task["status"] = "queued"
+            task["stage"] = "waiting_resources"
+            task["memory_reservation_bytes"] = admitted_bytes
+            _persist_task(rid)
+        if not _memory_admission.acquire(admitted_bytes, cancel_event):
+            with _task_lock:
+                task = _tasks[rid]
+                task["status"] = "cancelled"
+                task["stage"] = "cancelled"
+                task["finished_at"] = _now()
+                _persist_task(rid)
+            admitted_bytes = 0
+            return
+        with _task_lock:
+            task = _tasks[rid]
             task["status"] = "running"
             task["stage"] = "downloading"
             _persist_task(rid)
         child_env = dict(os.environ)
-        child_env.setdefault("HOME", child_env.get("USERPROFILE", ""))
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
             with log_path.open("a", encoding="utf-8") as stream:
@@ -1204,6 +1295,8 @@ def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
             with _task_lock:
                 _processes.pop(rid, None)
     finally:
+        if admitted_bytes:
+            _memory_admission.release(admitted_bytes)
         _submission_slots.release()
 
 
@@ -1416,6 +1509,9 @@ def capabilities() -> Response:
             "grid_schemes": ["mgrs", "tessera_0p1", "reference"],
             "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
             "max_queued_tasks": MAX_QUEUED_TASKS,
+            "global_request_limit": GLOBAL_REQUEST_LIMIT,
+            "memory": WEB_MEMORY_SNAPSHOT.as_dict(),
+            "resource_state_root": str(RESOURCE_STATE_ROOT),
             "max_grid_count": MAX_GRID_COUNT,
             "max_raw_gib": MAX_RAW_BYTES / 1024**3,
             "warn_raw_gib": WARN_RAW_BYTES / 1024**3,
@@ -1556,12 +1652,22 @@ def plan_points() -> Response:
             reference_grid=params["reference_grid"] or None,
             max_points=params["max_points"],
         )
-        _, report = validate_point_table(frame, params["years"])
+        _, report = validate_point_table(
+            frame, params["years"], chunk_size=params["chunk_size"]
+        )
         if report.get("errors"):
             raise ValueError("; ".join(report["errors"]))
         params["samples_path"] = str(primary.resolve())
         params["sample_count"] = int(len(frame))
         raw_bytes = len(frame) * len(params["years"]) * 64 * 4
+        resources = plan_point_resources(
+            chunk_size=params["chunk_size"],
+            years=len(params["years"]),
+            workers=params["workers"],
+            snapshot=WEB_MEMORY_SNAPSHOT,
+            global_request_limit=GLOBAL_REQUEST_LIMIT,
+        )
+        params["resolved_workers"] = resources.workers
         point_plan = {
             **report,
             "workflow": "points",
@@ -1572,6 +1678,8 @@ def plan_points() -> Response:
             "source_geometry_types": geometry_types or ["coordinate_table"],
             "normalized_crs": "EPSG:4326",
             "resolution_m": 10.0,
+            "resource_plan": resources.as_dict(),
+            "memory": WEB_MEMORY_SNAPSHOT.as_dict(),
         }
         return jsonify(_write_plan(params, point_plan, plan_dir))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

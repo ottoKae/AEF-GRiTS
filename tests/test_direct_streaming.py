@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import threading
+import time
 
 import numpy as np
 from affine import Affine
@@ -303,3 +305,76 @@ def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, 
         fake_ee,
     )
     assert adopted["adopted_legacy_store"] is True
+
+
+def test_grid_pipeline_keeps_1024_fetches_bounded(tmp_path, monkeypatch, capsys):
+    grid = GridSpec(
+        scheme="reference",
+        grid_id="STRESS",
+        crs="EPSG:32717",
+        transform=Affine(10, 0, 500_000, 0, -10, 10_000_000),
+        width=256,
+        height=256,
+        bounds=(500_000, 9_997_440, 502_560, 10_000_000),
+    )
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    calls = 0
+
+    class FakeImage:
+        def unmask(self, *args, **kwargs):
+            return self
+
+    class FakeGeometry:
+        @staticmethod
+        def Rectangle(*args, **kwargs):
+            return object()
+
+    class FakeData:
+        @staticmethod
+        def computePixels(request):
+            nonlocal active, peak, calls
+            with lock:
+                active += 1
+                calls += 1
+                peak = max(peak, active)
+            time.sleep(0.0005)
+            height = request["grid"]["dimensions"]["height"]
+            width = request["grid"]["dimensions"]["width"]
+            response = {
+                band: np.zeros((height, width), dtype=np.float32)
+                for band in grid_stream.AEF_BANDS
+            }
+            with lock:
+                active -= 1
+            return response
+
+    fake_ee = SimpleNamespace(Geometry=FakeGeometry, data=FakeData)
+    monkeypatch.setattr(grid_stream, "annual_image", lambda *args, **kwargs: FakeImage())
+    args = SimpleNamespace(
+        block_size=8,
+        inner_chunk=8,
+        shard_size=64,
+        max_retries=0,
+        workers=4,
+        checkpoint_every=128,
+        commit_timeout=60,
+        adopt_existing_complete=False,
+        import_legacy_progress=None,
+        keep_staging=False,
+    )
+    report = _stream_one(
+        args,
+        [2025],
+        grid,
+        tmp_path / "final" / "stress.zarr",
+        tmp_path / "state" / "catalog.parquet",
+        tmp_path / "state",
+        tmp_path / "staging",
+        fake_ee,
+    )
+    capsys.readouterr()
+    assert calls == 1024
+    assert peak <= report["resource_plan"]["max_in_flight"]
+    assert report["blocks"] == 1024

@@ -155,6 +155,22 @@ python scripts/resolve_aef_grid_ids.py \
 
 下载数据、认证信息、日志、任务状态和本地输出均不会进入Git。
 
+## 内存受限服务器并发
+
+点位和格网命令均支持 `--workers auto`。程序会综合主机可用内存、Linux
+cgroup剩余额度和用户指定的 `--memory-limit-gib`，自动确定并发数。格网
+请求采用有界在途队列，点位任务不再一次性创建全部Future。多个CLI或Web
+任务共享Earth Engine请求令牌池，最终产物交付使用全局独占锁。
+
+独立启动多个任务时，应指定同一个ext4/XFS资源状态目录：
+
+```bash
+export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
+```
+
+计划和报告会保存最终采用的worker数、估计峰值内存、实际peak RSS和节流
+次数。详细说明见[内存有界下载](docs/resource-bounded-download.md)。
+
 ## 读取本地Zarr
 
 ```python

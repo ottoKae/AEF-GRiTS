@@ -57,6 +57,28 @@ def test_grid_commands_preserve_selected_scheme(tmp_path):
     )
     assert safe[safe.index("--state-dir") + 1] == str(tmp_path / "state")
     assert safe[safe.index("--staging-dir") + 1] == str(tmp_path / "staging")
+    assert "--resource-state-dir" in safe
+    assert "--global-request-limit" in safe
+
+
+def test_memory_admission_blocks_until_capacity_is_released():
+    admission = web._MemoryAdmission(10)
+    cancel = threading.Event()
+    assert admission.acquire(7, cancel)
+    acquired = threading.Event()
+
+    def waiter():
+        if admission.acquire(5, cancel):
+            acquired.set()
+            admission.release(5)
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    time.sleep(0.05)
+    assert not acquired.is_set()
+    admission.release(7)
+    thread.join(timeout=2)
+    assert acquired.is_set()
 
 
 def test_point_command_requires_and_passes_samples(tmp_path):

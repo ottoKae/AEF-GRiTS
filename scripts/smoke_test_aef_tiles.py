@@ -90,14 +90,29 @@ def main() -> None:
         workers=args.workers,
         max_retries=args.max_retries,
         checkpoint_every=1,
+        commit_timeout=3600,
+        adopt_existing_complete=False,
+        import_legacy_progress=None,
+        keep_staging=False,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    catalog_path = args.out_dir / "catalog.parquet"
+    state_dir = args.out_dir / ".state"
+    staging_dir = args.out_dir / ".staging"
+    catalog_path = state_dir / "catalog.parquet"
     ee = initialize(args.project, high_volume=args.high_volume)
     results = []
     for probe in probes:
         output = args.out_dir / probe.scheme / f"{probe.grid_id}.zarr"
-        _stream_one(stream_args, [args.year], probe, output, catalog_path, ee)
+        _stream_one(
+            stream_args,
+            [args.year],
+            probe,
+            output,
+            catalog_path,
+            state_dir,
+            staging_dir,
+            ee,
+        )
         group = zarr.open_group(str(output), mode="r")
         values = np.asarray(group["embeddings"][0], dtype=np.float32)
         finite = np.isfinite(values)

@@ -19,6 +19,7 @@ import time
 from typing import Iterable
 
 from aef_grits.atomic import write_json
+from aef_grits.resource_control import FileLease, default_resource_root
 
 
 NTFS_TYPES = frozenset({"ntfs", "ntfs3", "fuseblk"})
@@ -328,6 +329,7 @@ def commit_staged_tree(
     *,
     signature: str,
     state_dir: str | Path,
+    resource_root: str | Path | None = None,
     timeout_seconds: float = 21_600,
 ) -> Path:
     """Copy one complete staged tree through a resumable incoming directory.
@@ -339,13 +341,19 @@ def commit_staged_tree(
     destination_path = Path(destination)
     state_path = Path(state_dir)
     incident = state_path / "commit_incident.json"
-    _run_commit_process(
-        source_path,
-        destination_path,
-        signature=signature,
-        timeout_seconds=timeout_seconds,
-        incident_path=incident,
-    )
+    lock_root = Path(resource_root) if resource_root is not None else default_resource_root(state_path)
+    lease = FileLease(lock_root / "final-delivery.lock")
+    lease.acquire(timeout_seconds=timeout_seconds)
+    try:
+        _run_commit_process(
+            source_path,
+            destination_path,
+            signature=signature,
+            timeout_seconds=timeout_seconds,
+            incident_path=incident,
+        )
+    finally:
+        lease.release()
     return destination_path
 
 

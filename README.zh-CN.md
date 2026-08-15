@@ -92,6 +92,20 @@ aef-grits-points \
   --out-dir outputs/points
 ```
 
+大型CSV、Parquet和矢量输入采用有界分块完成预检和下载。程序对点位内容生成
+稳定签名，并使用原生文件系统上的SQLite精确检查跨分块重复ID，不把整张表
+载入内存。
+
+大型点位结果可以逐批读取，无需拼接全部Parquet分片：
+
+```python
+from aef_grits import open_aef_point_dataset
+
+points = open_aef_point_dataset("outputs/points", years=[2025])
+for batch in points.iter_batches(columns=["sample_id"], years=[2025]):
+    consume(batch)
+```
+
 Shapefile、GeoPackage、GeoJSON以及polygon转点使用相同命令，并通过
 `--geometry-mode`选择转换方式。完整参数见`aef-grits-points --help`。
 
@@ -170,6 +184,10 @@ export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
 
 计划和报告会保存最终采用的worker数、估计峰值内存、实际peak RSS和节流
 次数。详细说明见[内存有界下载](docs/resource-bounded-download.md)。
+
+每次Earth Engine请求都有明确deadline（默认300秒）、错误分类、有界退避和
+可恢复失败事件。可用`--request-timeout-seconds`修改deadline。资源配置可选
+`workstation-auto`、`low-memory-1g`、`server-8g`和`server-16g`。
 
 ## 读取本地Zarr
 

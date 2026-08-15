@@ -97,6 +97,20 @@ aef-grits-points \
   --out-dir outputs/points
 ```
 
+Large CSV, Parquet and vector inputs are preflighted and downloaded in bounded
+chunks. The source is content-signed, and duplicate IDs are checked exactly
+with a native-filesystem SQLite audit rather than a full in-memory table.
+
+Read large point results without concatenating every shard:
+
+```python
+from aef_grits import open_aef_point_dataset
+
+points = open_aef_point_dataset("outputs/points", years=[2025])
+for batch in points.iter_batches(columns=["sample_id"], years=[2025]):
+    consume(batch)
+```
+
 For Shapefiles, GeoPackages, GeoJSON, and polygon-to-point conversion, use the
 same command and select `--geometry-mode`. Run `aef-grits-points --help` for all
 options.
@@ -178,6 +192,11 @@ export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
 Plans and reports record the resolved workers, estimated peak memory, actual
 peak RSS, and throttle count. See
 [resource-bounded downloads](docs/resource-bounded-download.md).
+
+Every Earth Engine attempt has an explicit deadline (default 300 seconds),
+classified retries, bounded backoff, and resumable failure events. Use
+`--request-timeout-seconds` to change it. Conservative presets are available
+through `--resource-profile workstation-auto|low-memory-1g|server-8g|server-16g`.
 
 ## Resolve grid IDs from an AOI
 

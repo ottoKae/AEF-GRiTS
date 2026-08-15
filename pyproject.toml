@@ -26,6 +26,7 @@ geo = [
   "matplotlib>=3.7",
   "mgrs>=1.5",
   "pyproj>=3.6",
+  "pyogrio>=0.7",
   "rasterio>=1.3",
   "scikit-learn>=1.3",
   "shapely>=2.0",
@@ -44,6 +45,7 @@ download = [
   "geopandas>=0.14,<2",
   "mgrs>=1.5,<2",
   "psutil>=5.9,<8",
+  "pyogrio>=0.7,<1",
   "pyproj>=3.6,<4",
   "rasterio>=1.3,<2",
   "shapely>=2,<3",
@@ -59,6 +61,7 @@ aef-grits-doctor = "aef_grits.doctor:main"
 aef-grits-points = "scripts.stream_aef_points_ee:main"
 aef-grits-grid = "scripts.stream_aef_grid_ee:main"
 aef-grits-storage-check = "scripts.check_aef_storage:main"
+aef-grits-benchmark-summary = "scripts.summarize_download_benchmarks:main"
 
 [tool.setuptools.packages.find]
 include = ["aef_grits*", "scripts"]

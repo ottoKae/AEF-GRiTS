@@ -154,7 +154,7 @@ def run_checks(
         try:
             import numpy as np
             import zarr
-            from zarr.codecs import BloscCodec, BloscShuffle
+            from zarr.codecs import BloscCodec
 
             with tempfile.TemporaryDirectory(prefix="aef-grits-zarr-") as directory:
                 root = zarr.open_group(directory, mode="w", zarr_format=3)
@@ -163,7 +163,7 @@ def run_checks(
                     shape=(1, 64, 8, 8),
                     chunks=(1, 64, 8, 8),
                     dtype="float32",
-                    compressors=[BloscCodec(cname="zstd", clevel=7, shuffle=BloscShuffle.noshuffle)],
+                    compressors=[BloscCodec(cname="zstd", clevel=7, shuffle="noshuffle")],
                 )
                 values = np.arange(array.size, dtype=np.float32).reshape(array.shape)
                 array[:] = values

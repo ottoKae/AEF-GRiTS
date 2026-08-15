@@ -15,7 +15,12 @@ from shapely.geometry import Point, Polygon, box
 import zarr
 
 from aef_grits.earth_engine import feature_columns
-from aef_grits.point_store import load_aef_points
+from aef_grits.point_store import (
+    iter_aef_point_batches,
+    load_aef_points,
+    open_aef_point_dataset,
+)
+from aef_grits.point_source import PointSource, preflight_point_source
 from aef_grits.points import load_point_source, validate_point_table
 from aef_grits.store import AEFCatalog
 from scripts.stream_aef_grid_ee import _create_store
@@ -112,6 +117,100 @@ def test_point_preflight_reports_duplicates_ranges_and_years():
     assert any("outside lon" in error for error in report["errors"])
 
 
+@pytest.mark.parametrize("suffix", [".csv", ".parquet"])
+def test_streaming_point_source_is_deterministic_and_bounded(tmp_path, suffix):
+    rows = 10_003
+    frame = pd.DataFrame(
+        {
+            "sample_id": [f"p{index:06d}" for index in range(rows)],
+            "lon": np.linspace(-80, -70, rows),
+            "lat": np.linspace(-5, 1, rows),
+            "split": np.where(np.arange(rows) % 2, "train", "validation"),
+        }
+    )
+    path = tmp_path / f"points{suffix}"
+    if suffix == ".csv":
+        frame.to_csv(path, index=False)
+    else:
+        frame.to_parquet(path, index=False, row_group_size=777)
+    source = PointSource.open(path, read_batch_size=777)
+    report = preflight_point_source(
+        source,
+        [2025],
+        chunk_size=1000,
+        audit_db=tmp_path / f"audit{suffix}.sqlite",
+    )
+    assert report["valid"]
+    assert report["rows"] == rows
+    assert report["estimated_shards"] == 11
+    chunks = list(source.iter_chunks(1000))
+    assert max(map(len, chunks)) == 1000
+    assert sum(map(len, chunks)) == rows
+    assert pd.concat(chunks).sample_id.tolist() == frame.sample_id.tolist()
+
+
+def test_streaming_preflight_finds_duplicates_across_chunks(tmp_path):
+    path = tmp_path / "duplicates.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["same", "middle", "same"],
+            "lon": [-79.0, -78.0, -77.0],
+            "lat": [-1.0, -2.0, -3.0],
+        }
+    ).to_csv(path, index=False)
+    report = preflight_point_source(
+        PointSource.open(path, read_batch_size=1),
+        [2025],
+        chunk_size=1,
+        audit_db=tmp_path / "duplicates.sqlite",
+    )
+    assert not report["valid"]
+    assert report["duplicate_sample_id_rows"] == 2
+
+
+def test_streaming_content_signature_includes_preserved_metadata(tmp_path):
+    signatures = []
+    for label in ("BALSA", "TECA"):
+        path = tmp_path / f"{label}.csv"
+        pd.DataFrame(
+            {
+                "sample_id": ["same"],
+                "lon": [-79.0],
+                "lat": [-1.0],
+                "species": [label],
+            }
+        ).to_csv(path, index=False)
+        report = preflight_point_source(
+            PointSource.open(path),
+            [2025],
+            chunk_size=1,
+            audit_db=tmp_path / f"{label}.sqlite",
+        )
+        signatures.append((report["sample_sha256"], report["content_sha256"]))
+    assert signatures[0][0] == signatures[1][0]
+    assert signatures[0][1] != signatures[1][1]
+
+
+def test_streaming_vector_source_does_not_load_whole_file(tmp_path):
+    path = tmp_path / "points.gpkg"
+    count = 1300
+    gpd.GeoDataFrame(
+        {"site": [f"s{index:04d}" for index in range(count)]},
+        geometry=[Point(-79 + index * 1e-5, -1) for index in range(count)],
+        crs="EPSG:4326",
+    ).to_file(path, driver="GPKG", layer="points")
+    source = PointSource.open(
+        path,
+        layer="points",
+        id_field="site",
+        read_batch_size=200,
+    )
+    chunks = list(source.iter_chunks(333))
+    assert [len(chunk) for chunk in chunks] == [333, 333, 333, 301]
+    assert chunks[0].sample_id.iloc[0] == "s0000"
+    assert chunks[-1].sample_id.iloc[-1] == "s1299"
+
+
 def test_validate_only_does_not_require_earth_engine_project(tmp_path):
     points = tmp_path / "points.csv"
     pd.DataFrame(
@@ -172,6 +271,31 @@ def test_unified_point_loader_checks_schema_and_completeness(tmp_path):
         load_aef_points(catalog, years=[2025], require_complete=True)
     with pytest.raises(ValueError, match="absent"):
         load_aef_points(catalog, years=[2024])
+
+    store = open_aef_point_dataset(
+        catalog,
+        years=[2025],
+        batch_size=1,
+        check_duplicate_ids=True,
+        audit_db=tmp_path / "reader_audit.sqlite",
+    )
+    assert store.report["out_of_core"]
+    assert store.report["rows"] == 2
+    batches = list(
+        store.iter_batches(
+            columns=["sample_id"],
+            years=[2025],
+            batch_size=1,
+        )
+    )
+    assert len(batches) == 2
+    assert all(len(batch) == 1 for batch in batches)
+    assert sum(len(batch) for batch in iter_aef_point_batches(
+        catalog,
+        years=[2025],
+        columns=["sample_id"],
+        batch_size=1,
+    )) == 2
 
 
 def _synthetic_grid(grid_id, scheme, x0):

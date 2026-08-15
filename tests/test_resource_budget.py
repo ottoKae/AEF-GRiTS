@@ -14,7 +14,9 @@ from aef_grits.resource_budget import (
     memory_snapshot,
     plan_grid_resources,
     plan_point_resources,
+    resolve_resource_profile,
 )
+from aef_grits.telemetry import RunTelemetry
 from aef_grits.resource_control import FileLease, TokenPool
 
 
@@ -55,6 +57,33 @@ def test_point_year_count_changes_estimated_request_memory():
     )
     assert nine.request_bytes == one.request_bytes * 9
     assert nine.estimated_peak_bytes > one.estimated_peak_bytes
+
+
+def test_named_resource_profile_preserves_explicit_overrides():
+    profile = resolve_resource_profile(
+        "low-memory-1g",
+        global_request_limit=1,
+    )
+    assert profile["memory_limit_gib"] == 1.0
+    assert profile["memory_reserve_gib"] == 0.5
+    assert profile["global_request_limit"] == 1
+
+
+def test_run_telemetry_reports_request_and_io_measurements():
+    telemetry = RunTelemetry()
+    telemetry.request_event("request_started", {})
+    telemetry.request_event("request_retry", {"elapsed_seconds": 2.0})
+    telemetry.request_event("request_started", {})
+    telemetry.request_event("request_succeeded", {"elapsed_seconds": 1.0})
+    telemetry.add_received_bytes(1024**2)
+    with telemetry.measure_write():
+        pass
+    report = telemetry.report()
+    assert report["requests_started"] == 2
+    assert report["requests_succeeded"] == 1
+    assert report["request_retries"] == 1
+    assert report["request_latency_seconds_p50"] == 1.5
+    assert report["earth_engine_response_mib_estimated"] == 1.0
 
 
 def test_token_pool_enforces_global_concurrency(tmp_path):

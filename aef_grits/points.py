@@ -57,10 +57,16 @@ def _reference_contract(path: str | Path) -> tuple[str, Any, int, int]:
         return str(dataset.crs), dataset.transform, dataset.width, dataset.height
 
 
-def _interior_pixel_centres(
-    geometry, transform, width: int, height: int, max_points: int
+def _iter_interior_pixel_centres(
+    geometry,
+    transform,
+    width: int,
+    height: int,
+    max_points: int,
+    *,
+    batch_points: int = 10_000,
 ):
-    """Yield reference-grid pixel centres strictly inside one geometry."""
+    """Yield bounded arrays of reference-grid centres inside one geometry."""
     from rasterio.windows import from_bounds
     from shapely import contains_xy
 
@@ -70,10 +76,9 @@ def _interior_pixel_centres(
     col0 = max(0, int(math.floor(window.col_off)))
     col1 = min(width, int(math.ceil(window.col_off + window.width)))
     if row0 >= row1 or col0 >= col1:
-        return np.empty((0, 2), dtype=np.float64)
+        return
     column_values = np.arange(col0, col1, dtype=np.int64)
-    rows_per_batch = max(1, 1_000_000 // max(1, len(column_values)))
-    selected = []
+    rows_per_batch = max(1, int(batch_points) // max(1, len(column_values)))
     selected_count = 0
     for batch_row0 in range(row0, row1, rows_per_batch):
         batch_row1 = min(row1, batch_row0 + rows_per_batch)
@@ -102,24 +107,33 @@ def _interior_pixel_centres(
                 f"Polygon interior exceeds remaining max_points={max_points:,}"
             )
         if len(batch):
-            selected.append(batch)
-    return (
-        np.concatenate(selected)
-        if selected
-        else np.empty((0, 2), dtype=np.float64)
+            yield batch
+
+
+def _interior_pixel_centres(
+    geometry, transform, width: int, height: int, max_points: int
+):
+    """Return all centres for the backward-compatible in-memory API."""
+    selected = list(
+        _iter_interior_pixel_centres(
+            geometry, transform, width, height, max_points
+        )
     )
+    return np.concatenate(selected) if selected else np.empty((0, 2), dtype=np.float64)
 
 
-def vector_to_points(
-    path: str | Path,
+def vector_frame_to_points(
+    vectors,
     *,
+    source_path: str | Path,
     layer: str | None = None,
     geometry_mode: str = "auto",
     id_field: str | None = None,
     reference_grid: str | Path | None = None,
     max_points: int = 1_000_000,
+    row_offset: int = 0,
 ) -> pd.DataFrame:
-    """Convert point or polygon vector data into a WGS84 point table.
+    """Convert one already loaded vector batch into a WGS84 point table.
 
     ``auto`` keeps point features and uses one representative interior point for
     polygons. ``representative`` and ``centroid`` force the corresponding
@@ -129,11 +143,7 @@ def vector_to_points(
     import geopandas as gpd
     from shapely.geometry import MultiPoint, Point
 
-    source = Path(path)
-    if source.suffix.lower() == ".parquet":
-        vectors = gpd.read_parquet(source)
-    else:
-        vectors = gpd.read_file(source, layer=layer)
+    source = Path(source_path)
     if vectors.empty:
         raise ValueError(f"Vector source is empty: {source}")
     if vectors.crs is None:
@@ -152,9 +162,10 @@ def vector_to_points(
         projected = vectors.to_crs(reference[0])
 
     records: list[dict[str, Any]] = []
-    for position, ((source_index, row), (_, projected_row)) in enumerate(
+    for local_position, ((source_index, row), (_, projected_row)) in enumerate(
         zip(vectors.iterrows(), projected.iterrows()), 1
     ):
+        position = row_offset + local_position
         geometry = projected_row.geometry
         if geometry is None or geometry.is_empty:
             continue
@@ -213,6 +224,144 @@ def vector_to_points(
     if not records:
         raise ValueError(f"No usable point or polygon geometry in {source}")
     return pd.DataFrame.from_records(records)
+
+
+def iter_vector_frame_points(
+    vectors,
+    *,
+    source_path: str | Path,
+    geometry_mode: str = "auto",
+    id_field: str | None = None,
+    reference_grid: str | Path | None = None,
+    max_points: int = 1_000_000,
+    row_offset: int = 0,
+    output_batch_size: int = 10_000,
+):
+    """Yield bounded normalized batches from an already loaded vector batch."""
+    import geopandas as gpd
+    from shapely.geometry import MultiPoint, Point
+
+    source = Path(source_path)
+    if vectors.empty:
+        return
+    if vectors.crs is None:
+        raise ValueError(f"Vector source has no CRS: {source}")
+    if geometry_mode not in {"auto", "representative", "centroid", "interior_pixels"}:
+        raise ValueError(f"Unsupported geometry mode: {geometry_mode}")
+    if max_points <= 0 or output_batch_size <= 0:
+        raise ValueError("max_points and output_batch_size must be positive")
+    reference = None
+    projected = vectors
+    if geometry_mode == "interior_pixels":
+        if reference_grid is None:
+            raise ValueError("interior_pixels requires --reference-grid")
+        reference = _reference_contract(reference_grid)
+        projected = vectors.to_crs(reference[0])
+
+    records: list[dict[str, Any]] = []
+    emitted = 0
+
+    def flush(force: bool = False):
+        nonlocal records
+        while len(records) >= output_batch_size or (force and records):
+            count = output_batch_size if len(records) >= output_batch_size else len(records)
+            batch = records[:count]
+            records = records[count:]
+            yield pd.DataFrame.from_records(batch)
+
+    for local_position, ((source_index, row), (_, projected_row)) in enumerate(
+        zip(vectors.iterrows(), projected.iterrows()), 1
+    ):
+        position = row_offset + local_position
+        geometry = projected_row.geometry
+        if geometry is None or geometry.is_empty:
+            continue
+        attributes = row.drop(labels=[vectors.geometry.name]).to_dict()
+        base_id = _base_identifier(row, position, id_field)
+        geometry_type = geometry.geom_type
+        if isinstance(geometry, Point):
+            item_batches = [([geometry], "source_point", False)]
+        elif isinstance(geometry, MultiPoint):
+            item_batches = [(list(geometry.geoms), "source_point", len(geometry.geoms) != 1)]
+        elif "Polygon" in geometry_type and geometry_mode in {"auto", "representative"}:
+            item_batches = [([geometry.representative_point()], "representative_point", False)]
+        elif "Polygon" in geometry_type and geometry_mode == "centroid":
+            item_batches = [([geometry.centroid], "centroid", False)]
+        elif "Polygon" in geometry_type and geometry_mode == "interior_pixels":
+            crs, transform, width, height = reference
+            item_batches = (
+                ([Point(x, y) for x, y in xy], "interior_pixel", True)
+                for xy in _iter_interior_pixel_centres(
+                    geometry,
+                    transform,
+                    width,
+                    height,
+                    max_points=max_points - emitted,
+                    batch_points=output_batch_size,
+                )
+            )
+        else:
+            raise ValueError(
+                f"Unsupported geometry at source row {position}: {geometry_type}"
+            )
+
+        point_index = 0
+        for raw_points, method, multiple in item_batches:
+            if not raw_points:
+                continue
+            point_series = gpd.GeoSeries(raw_points, crs=projected.crs).to_crs("EPSG:4326")
+            for point in point_series:
+                point_index += 1
+                emitted += 1
+                if emitted > max_points:
+                    raise ValueError(
+                        f"Converted point count exceeds max_points={max_points:,}"
+                    )
+                record = dict(attributes)
+                record.update(
+                    {
+                        "sample_id": (
+                            f"{base_id}__px{point_index:06d}" if multiple else base_id
+                        ),
+                        "lon": float(point.x),
+                        "lat": float(point.y),
+                        "source_feature_id": str(source_index),
+                        "source_geometry_type": geometry_type,
+                        "point_method": method,
+                        "source_path": str(source.resolve()),
+                    }
+                )
+                records.append(record)
+                yield from flush()
+    yield from flush(force=True)
+
+
+def vector_to_points(
+    path: str | Path,
+    *,
+    layer: str | None = None,
+    geometry_mode: str = "auto",
+    id_field: str | None = None,
+    reference_grid: str | Path | None = None,
+    max_points: int = 1_000_000,
+) -> pd.DataFrame:
+    """Convert point or polygon vector data into a WGS84 point table."""
+    import geopandas as gpd
+
+    source = Path(path)
+    if source.suffix.lower() == ".parquet":
+        vectors = gpd.read_parquet(source)
+    else:
+        vectors = gpd.read_file(source, layer=layer)
+    return vector_frame_to_points(
+        vectors,
+        source_path=source,
+        layer=layer,
+        geometry_mode=geometry_mode,
+        id_field=id_field,
+        reference_grid=reference_grid,
+        max_points=max_points,
+    )
 
 
 def load_point_source(

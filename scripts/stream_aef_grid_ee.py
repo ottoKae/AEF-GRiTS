@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from rasterio.transform import Affine
 import zarr
-from zarr.codecs import BloscCodec, BloscShuffle
+from zarr.codecs import BloscCodec
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +32,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aef_grits.atomic import write_json, write_parquet  # noqa: E402
-from aef_grits.earth_engine import AEF_BANDS, DATASET, annual_image, initialize  # noqa: E402
+from aef_grits.earth_engine import (  # noqa: E402
+    AEF_BANDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DATASET,
+    EarthEngineRequestError,
+    RequestPolicy,
+    annual_image,
+    execute_with_retry,
+    initialize,
+)
 from aef_grits.grids import (  # noqa: E402
     AEF_RESOLUTION_M,
     GridSpec,
@@ -46,6 +55,7 @@ from aef_grits.resource_budget import (  # noqa: E402
     ResourceLimitError,
     memory_snapshot,
     plan_grid_resources,
+    resolve_resource_profile,
 )
 from aef_grits.resource_control import TokenPool, default_resource_root  # noqa: E402
 from aef_grits.storage_safety import (  # noqa: E402
@@ -54,6 +64,7 @@ from aef_grits.storage_safety import (  # noqa: E402
     mount_for_path,
     validate_storage_layout,
 )
+from aef_grits.telemetry import RunTelemetry  # noqa: E402
 
 
 NODATA = -9999.0
@@ -110,9 +121,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inner-chunk", type=int, default=DEFAULT_INNER_CHUNK)
     parser.add_argument("--shard-size", type=int, default=DEFAULT_SHARD_SIZE)
     parser.add_argument("--workers", default="auto", help="Positive integer or auto")
-    parser.add_argument("--memory-limit-gib", default="auto")
-    parser.add_argument("--memory-reserve-gib", default="auto")
-    parser.add_argument("--global-request-limit", type=int, default=DEFAULT_GLOBAL_REQUESTS)
+    parser.add_argument(
+        "--resource-profile",
+        choices=("workstation-auto", "low-memory-1g", "server-8g", "server-16g"),
+        default="workstation-auto",
+    )
+    parser.add_argument("--memory-limit-gib")
+    parser.add_argument("--memory-reserve-gib")
+    parser.add_argument("--global-request-limit", type=int)
     parser.add_argument(
         "--resource-state-dir",
         type=Path,
@@ -121,6 +137,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-high-watermark", type=float, default=0.80)
     parser.add_argument("--memory-critical-watermark", type=float, default=0.90)
     parser.add_argument("--max-retries", type=int, default=6)
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help="Deadline for each Earth Engine API attempt (default: 300)",
+    )
     parser.add_argument("--checkpoint-every", type=int, default=8)
     parser.add_argument("--catalog", type=Path)
     parser.add_argument(
@@ -277,7 +299,16 @@ def _pixel_grid(grid: dict, block: dict) -> dict:
     }
 
 
-def _fetch_block(ee, image, grid: dict, block: dict, max_retries: int, request_pool):
+def _fetch_block(
+    ee,
+    image,
+    grid: dict,
+    block: dict,
+    max_retries: int,
+    request_pool,
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    telemetry: RunTelemetry | None = None,
+):
     request = {
         "expression": image,
         "fileFormat": "NUMPY_NDARRAY",
@@ -285,22 +316,35 @@ def _fetch_block(ee, image, grid: dict, block: dict, max_retries: int, request_p
         "grid": _pixel_grid(grid, block),
         "workloadTag": "aef_grits_grid",
     }
-    error: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            with request_pool.token():
-                response = ee.data.computePixels(request)
-            values = np.stack(
-                [np.asarray(response[band], dtype=np.float32) for band in AEF_BANDS]
-            )
-            values[values == NODATA] = np.nan
-            return block, values
-        except Exception as exc:
-            error = exc
-            if attempt >= max_retries:
-                break
-            time.sleep(min(60.0, 2.0**attempt))
-    raise RuntimeError(f"Earth Engine grid request failed for {block['key']}: {error}")
+    def fetch():
+        token_context = telemetry.request_token(request_pool) if telemetry else request_pool.token()
+        with token_context:
+            return ee.data.computePixels(request)
+
+    response = execute_with_retry(
+        f"computePixels:{block['key']}",
+        fetch,
+        RequestPolicy(
+            timeout_seconds=request_timeout_seconds,
+            max_retries=max_retries,
+        ),
+        event=lambda name, payload: (
+            telemetry.request_event(name, payload) if telemetry else None,
+            emit_event(name, workflow="grid", **payload),
+        ),
+    )
+    try:
+        values = np.stack(
+            [np.asarray(response[band], dtype=np.float32) for band in AEF_BANDS]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Earth Engine response schema is invalid for block {block['key']}: {exc}"
+        ) from exc
+    values[values == NODATA] = np.nan
+    if telemetry is not None:
+        telemetry.add_received_bytes(values.nbytes)
+    return block, values
 
 
 def _create_store(
@@ -325,7 +369,7 @@ def _create_store(
     compressor = BloscCodec(
         cname=COMPRESSION_CNAME,
         clevel=COMPRESSION_LEVEL,
-        shuffle=BloscShuffle.noshuffle,
+        shuffle="noshuffle",
         typesize=COMPRESSION_TYPESIZE,
     )
     group.create_array(
@@ -416,6 +460,7 @@ def _stream_one(
     resource_plan=None,
     request_pool=None,
     resource_root=None,
+    telemetry=None,
 ) -> dict:
     grid = grid_spec.as_dict()
     if resource_plan is None:
@@ -462,6 +507,7 @@ def _stream_one(
         progress = {"signature": signature, "completed": [], "delivery_status": "staging"}
     completed = set(progress.get("completed", []))
     memory_guard = MemoryGuard(resource_plan)
+    telemetry = telemetry or RunTelemetry()
     all_blocks = list(_block_specs(grid, years, args.block_size))
     already_committed = progress.get("delivery_status") == "committed"
     if already_committed:
@@ -567,6 +613,8 @@ def _stream_one(
                 block,
                 args.max_retries,
                 request_pool,
+                getattr(args, "request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
+                telemetry,
             )
             active[future] = block
             return True
@@ -582,12 +630,13 @@ def _stream_one(
                 block, values = future.result()
                 row, column = block["row"], block["column"]
                 assert target is not None
-                target[
-                    block["time_index"],
-                    :,
-                    row : row + block["height"],
-                    column : column + block["width"],
-                ] = values
+                with telemetry.measure_write():
+                    target[
+                        block["time_index"],
+                        :,
+                        row : row + block["height"],
+                        column : column + block["width"],
+                    ] = values
                 completed.add(block["key"])
                 written += 1
                 since_checkpoint += 1
@@ -650,14 +699,15 @@ def _stream_one(
     elif work_output != output:
         write_json(completion, work_output / "AEF_COMPLETE.json")
         validate_storage_layout(output.parent, state_root, staging_root)
-        commit_staged_tree(
-            work_output,
-            output,
-            signature=signature,
-            state_dir=grid_state,
-            timeout_seconds=args.commit_timeout,
-            resource_root=resource_root,
-        )
+        with telemetry.measure_delivery():
+            commit_staged_tree(
+                work_output,
+                output,
+                signature=signature,
+                state_dir=grid_state,
+                timeout_seconds=args.commit_timeout,
+                resource_root=resource_root,
+            )
     if adopting:
         completion["adopted_legacy_store"] = True
     write_json(
@@ -709,6 +759,14 @@ def _stream_one(
     report["working_store"] = os.path.abspath(work_output)
     report["adopted_legacy_store"] = adopting
     report["resource_plan"] = resource_plan.as_dict()
+    report["request_policy"] = RequestPolicy(
+        timeout_seconds=getattr(
+            args, "request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS
+        ),
+        max_retries=args.max_retries,
+    ).as_dict()
+    report["telemetry"] = telemetry.report()
+    report["resource_profile"] = getattr(args, "resolved_resource_profile", None)
     report.update(memory_guard.report())
     write_json(report, report_path)
     if work_output != output and work_output.exists() and not args.keep_staging:
@@ -719,6 +777,16 @@ def _stream_one(
 
 def main() -> None:
     args = parse_args()
+    profile = resolve_resource_profile(
+        args.resource_profile,
+        memory_limit_gib=args.memory_limit_gib,
+        memory_reserve_gib=args.memory_reserve_gib,
+        global_request_limit=args.global_request_limit,
+    )
+    args.memory_limit_gib = profile["memory_limit_gib"]
+    args.memory_reserve_gib = profile["memory_reserve_gib"]
+    args.global_request_limit = profile["global_request_limit"]
+    args.resolved_resource_profile = profile
     years = sorted(set(args.years))
     if not years:
         raise ValueError("At least one year is required")
@@ -729,6 +797,8 @@ def main() -> None:
         raise ValueError("shard-size must be divisible by inner-chunk")
     if args.commit_timeout <= 0:
         raise ValueError("commit-timeout must be positive")
+    if args.request_timeout_seconds <= 0:
+        raise ValueError("request-timeout-seconds must be positive")
     if args.global_request_limit <= 0:
         raise ValueError("global-request-limit must be positive")
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
@@ -810,13 +880,24 @@ def main() -> None:
             "memory": snapshot.as_dict(),
             "resource_plan": resource_plan.as_dict(),
             "resource_state_dir": str(resource_root),
+            "request_policy": RequestPolicy(
+                timeout_seconds=args.request_timeout_seconds,
+                max_retries=args.max_retries,
+            ).as_dict(),
+            "resource_profile": profile,
             "note": "raw_gib is uncompressed float32 size; lossless Zarr size depends on feature entropy",
         }
         print(json.dumps(plan, indent=2))
         return
-    ee = initialize(args.project, high_volume=args.high_volume)
+    ee = initialize(
+        args.project,
+        high_volume=args.high_volume,
+        request_timeout_seconds=args.request_timeout_seconds,
+    )
     reports = []
     failures = []
+    resumable_failure = None
+    run_telemetry = RunTelemetry()
     for index, grid in enumerate(grids, 1):
         print(f"Grid {index}/{len(grids)}: {grid.scheme}/{grid.grid_id}", flush=True)
         emit_event(
@@ -840,6 +921,7 @@ def main() -> None:
                 resource_plan,
                 request_pool,
                 resource_root,
+                run_telemetry,
             )
             reports.append(report)
             emit_event(
@@ -851,6 +933,8 @@ def main() -> None:
             )
         except Exception as exc:
             failures.append({"grid_id": grid.grid_id, "error": str(exc)})
+            if isinstance(exc, EarthEngineRequestError) and exc.resumable:
+                resumable_failure = resumable_failure or exc
             print(f"Grid failed: {grid.grid_id}: {exc}", file=sys.stderr, flush=True)
     summary = {
         "scheme": args.grid_scheme,
@@ -862,12 +946,31 @@ def main() -> None:
     summary["storage_layout"] = layout.as_dict()
     summary["memory"] = snapshot.as_dict()
     summary["resource_plan"] = resource_plan.as_dict()
+    summary["request_policy"] = RequestPolicy(
+        timeout_seconds=args.request_timeout_seconds,
+        max_retries=args.max_retries,
+    ).as_dict()
+    summary["resource_profile"] = profile
+    summary["telemetry"] = run_telemetry.report()
     summary["resource_state_dir"] = str(resource_root)
     write_json(summary, state_root / "run_summary.json")
     emit_event("run_complete", workflow="grid", completed=len(reports), total=len(grids))
+    if resumable_failure is not None:
+        raise resumable_failure
     if failures:
         raise RuntimeError(f"{len(failures)} of {len(grids)} grids failed")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except EarthEngineRequestError as exc:
+        emit_event(
+            "run_resumable_failure" if exc.resumable else "run_failed",
+            workflow="grid",
+            operation=exc.operation,
+            classification=exc.classification,
+            attempts=exc.attempts,
+            error=str(exc),
+        )
+        raise SystemExit(75 if exc.resumable else 1) from exc

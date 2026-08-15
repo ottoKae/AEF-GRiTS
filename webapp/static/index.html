@@ -1727,6 +1727,13 @@ function renderTasks() {
     const validationText = t.validation
       ? `<span class="task-validation ${t.validation.valid ? 'ok' : 'failed'}">产物验证：${t.validation.valid ? '通过' : '失败'}${(t.validation.warnings || []).length ? ` · ${t.validation.warnings.length} 个警告` : ''}</span>`
       : '';
+    const resources = t.resource_status || {};
+    const reservationGiB = typeof resources.memory_reservation_bytes === 'number'
+      ? (resources.memory_reservation_bytes / (1024 ** 3)).toFixed(2)
+      : null;
+    const resourceText = reservationGiB
+      ? `<div class="task-card-meta"><strong>资源：</strong>${reservationGiB} GiB · ${escapeHtml(resources.profile || 'auto')} · 请求上限 ${resources.global_request_limit || '—'} · 重试 ${resources.request_retries || 0}</div>`
+      : '';
     const card = document.createElement('div');
     card.className = 'task-card';
     card.innerHTML = `
@@ -1738,6 +1745,7 @@ function renderTasks() {
       <div class="task-card-meta" title="${escapeHtml(scope)}"><strong>范围：</strong>${escapeHtml(scope)}</div>
       <div class="task-card-meta"><strong>年份：</strong>${escapeHtml(years)}${t.grid_crs && t.grid_crs.length ? ' · '+escapeHtml(t.grid_crs.join(', ')) : ''}</div>
       ${outputText}
+      ${resourceText}
       <div class="task-progress"><div class="task-progress-bar ${frac==null && t.status==='running' ? 'indeterminate' : ''}" id="prog-${t.run_id}" style="${frac!=null ? 'width:'+Math.round(frac*100)+'%' : ''}"></div></div>
       <div class="task-progress-text" id="progtext-${t.run_id}"><span>${progressText}</span>${validationText}</div>
       <div class="task-card-log ${openLogs.has(t.run_id) ? 'shown' : ''}" id="log-${t.run_id}">${escapeHtml((taskLogs[t.run_id] || []).join('\n'))}</div>

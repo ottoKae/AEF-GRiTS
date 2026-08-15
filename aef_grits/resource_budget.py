@@ -16,6 +16,52 @@ DEFAULT_GLOBAL_REQUESTS = 8
 GRID_WORKER_CAP = 4
 POINT_WORKER_CAP = 4
 
+RESOURCE_PROFILES = {
+    "workstation-auto": {
+        "memory_limit_gib": "auto",
+        "memory_reserve_gib": "auto",
+        "global_request_limit": 8,
+    },
+    "low-memory-1g": {
+        "memory_limit_gib": 1.0,
+        "memory_reserve_gib": 0.5,
+        "global_request_limit": 2,
+    },
+    "server-8g": {
+        "memory_limit_gib": 8.0,
+        "memory_reserve_gib": 2.0,
+        "global_request_limit": 4,
+    },
+    "server-16g": {
+        "memory_limit_gib": 16.0,
+        "memory_reserve_gib": 2.0,
+        "global_request_limit": 8,
+    },
+}
+
+
+def resolve_resource_profile(
+    name: str,
+    *,
+    memory_limit_gib: float | str | None = None,
+    memory_reserve_gib: float | str | None = None,
+    global_request_limit: int | None = None,
+) -> dict[str, Any]:
+    """Resolve a named conservative profile with explicit CLI overrides."""
+    if name not in RESOURCE_PROFILES:
+        raise ValueError(
+            f"Unknown resource profile {name!r}; expected {sorted(RESOURCE_PROFILES)}"
+        )
+    profile = dict(RESOURCE_PROFILES[name])
+    if memory_limit_gib is not None:
+        profile["memory_limit_gib"] = memory_limit_gib
+    if memory_reserve_gib is not None:
+        profile["memory_reserve_gib"] = memory_reserve_gib
+    if global_request_limit is not None:
+        profile["global_request_limit"] = int(global_request_limit)
+    profile["name"] = name
+    return profile
+
 
 def _read_int(path: Path) -> int | None:
     try:

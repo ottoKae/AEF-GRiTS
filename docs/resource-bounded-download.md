@@ -49,25 +49,47 @@ Both streamers expose:
 --memory-high-watermark 0.80
 --memory-critical-watermark 0.90
 --resource-state-dir PATH
+--request-timeout-seconds 300
+--resource-profile workstation-auto|low-memory-1g|server-8g|server-16g
 ```
 
 At the high watermark, new prefetch is suppressed and existing results drain.
 At the critical watermark, the grid ledger is saved before the run exits;
 point Parquet shards already committed atomically remain resumable.
 
+Earth Engine's hidden retry loop is disabled. AEF-GRiTS applies the configured
+client deadline to every API attempt, classifies timeout/transient/permanent
+errors, and emits auditable retry events. A retryable terminal failure exits
+with status 75 after preserving the grid ledger or committed point shards.
+
+Point-source preflight is streaming. CSV and Parquet use native batches;
+supported vectors use bounded feature batches, and polygon interior pixels are
+emitted incrementally. Exact duplicate checks use a SQLite audit on the native
+state filesystem. Point results can be reopened as a PyArrow Dataset through
+`open_aef_point_dataset()` and projected or filtered batchwise.
+
 ## Web server
 
 The Web task-count limit is only a ceiling. Each accepted plan carries an
-estimated peak-memory reservation, and a queued task starts only when the sum
-of active reservations fits the Web memory budget. Configure the server with:
+estimated peak-memory reservation. Admission jointly enforces memory and active
+task limits. Small jobs may backfill temporarily when the oldest job does not
+fit, while an aging limit prevents starvation. Configure the server with:
 
 ```bash
 export AEF_GRITS_WEB_MEMORY_GIB=16
 export AEF_GRITS_WEB_MEMORY_RESERVE_GIB=2
 export AEF_GRITS_WEB_GLOBAL_REQUESTS=8
+export AEF_GRITS_WEB_RESOURCE_PROFILE=server-16g
+export AEF_GRITS_WEB_MAX_BYPASS_SECONDS=30
 export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
 ```
 
 For Linux NTFS delivery, `AEF_GRITS_WEB_STATE`, `AEF_GRITS_WEB_STAGING`, and
 `AEF_GRITS_RESOURCE_STATE` must all remain on ext4/XFS. NTFS remains a final
 delivery target only.
+
+Reports include request latency percentiles, retry/timeout counts, estimated
+deserialized response bytes, token-wait time, Zarr/Parquet write time and
+final-delivery time. Combine
+explicit reports with `aef-grits-benchmark-summary`; never recursively scan an
+unhealthy NTFS mount for reports.

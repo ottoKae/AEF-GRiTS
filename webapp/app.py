@@ -40,7 +40,7 @@ from aef_grits.atomic import write_json, write_text
 from aef_grits.resources import BUILTIN_MGRS_INDEX
 from aef_grits.grid_lookup import resolve_mgrs, resolve_tessera
 from aef_grits.grids import MGRSGridProvider, Tessera01GridProvider
-from aef_grits.points import load_point_source, validate_point_table
+from aef_grits.point_source import PointSource, preflight_point_source
 from aef_grits.resource_budget import (
     DEFAULT_GLOBAL_REQUESTS,
     memory_snapshot,
@@ -71,6 +71,9 @@ STATIC_DIR = APP_DIR / "static"
 SERVER_PID_PATH = RUNS_DIR / "server.pid"
 MAX_CONCURRENT_TASKS = max(1, int(os.environ.get("AEF_GRITS_WEB_CONCURRENCY", "2")))
 MAX_QUEUED_TASKS = max(0, int(os.environ.get("AEF_GRITS_WEB_MAX_QUEUE", "20")))
+MAX_BYPASS_SECONDS = max(
+    0.0, float(os.environ.get("AEF_GRITS_WEB_MAX_BYPASS_SECONDS", "30"))
+)
 MAX_GRID_COUNT = max(1, int(os.environ.get("AEF_GRITS_WEB_MAX_GRIDS", "500")))
 MAX_UPLOAD_BYTES = int(os.environ.get("AEF_GRITS_WEB_MAX_UPLOAD_MB", "512")) * 1024**2
 MAX_RAW_BYTES = int(float(os.environ.get("AEF_GRITS_WEB_MAX_RAW_GIB", "100")) * 1024**3)
@@ -84,6 +87,11 @@ VALIDATION_TIMEOUT_SECONDS = max(
 GLOBAL_REQUEST_LIMIT = max(
     1, int(os.environ.get("AEF_GRITS_WEB_GLOBAL_REQUESTS", str(DEFAULT_GLOBAL_REQUESTS)))
 )
+RESOURCE_PROFILE = os.environ.get(
+    "AEF_GRITS_WEB_RESOURCE_PROFILE", "workstation-auto"
+).strip()
+if RESOURCE_PROFILE not in {"workstation-auto", "low-memory-1g", "server-8g", "server-16g"}:
+    raise ValueError("AEF_GRITS_WEB_RESOURCE_PROFILE is invalid")
 WEB_MEMORY_SNAPSHOT = memory_snapshot(
     limit_gib=os.environ.get("AEF_GRITS_WEB_MEMORY_GIB", "auto"),
     reserve_gib=os.environ.get("AEF_GRITS_WEB_MEMORY_RESERVE_GIB", "auto"),
@@ -157,35 +165,95 @@ _tasks: dict[str, dict[str, Any]] = {}
 _processes: dict[str, subprocess.Popen[str]] = {}
 _task_lock = threading.RLock()
 _executor = ThreadPoolExecutor(
-    max_workers=MAX_CONCURRENT_TASKS,
+    max_workers=MAX_CONCURRENT_TASKS + MAX_QUEUED_TASKS,
     thread_name_prefix="aef-web-worker",
 )
 _submission_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TASKS + MAX_QUEUED_TASKS)
 
 
 class _MemoryAdmission:
-    def __init__(self, capacity_bytes: int):
+    """Combined memory/process admission with bounded, aging backfill."""
+
+    def __init__(
+        self,
+        capacity_bytes: int,
+        max_active: int = 1_000_000,
+        max_bypass_seconds: float = 30.0,
+    ):
         self.capacity_bytes = int(capacity_bytes)
+        self.max_active = max(1, int(max_active))
+        self.max_bypass_seconds = max(0.0, float(max_bypass_seconds))
         self.used_bytes = 0
+        self.active = 0
+        self.waiters: list[dict[str, Any]] = []
         self.condition = threading.Condition()
 
-    def acquire(self, amount: int, cancel_event: threading.Event) -> bool:
+    def acquire(
+        self,
+        amount: int,
+        cancel_event: threading.Event,
+        request_id: str | None = None,
+    ) -> bool:
         amount = int(amount)
+        if amount <= 0 or amount > self.capacity_bytes:
+            return False
+        waiter = {
+            "id": request_id or uuid.uuid4().hex,
+            "amount": amount,
+            "queued_at": time.monotonic(),
+        }
         with self.condition:
-            while self.used_bytes + amount > self.capacity_bytes:
+            self.waiters.append(waiter)
+            while True:
                 if cancel_event.is_set():
+                    if waiter in self.waiters:
+                        self.waiters.remove(waiter)
+                    self.condition.notify_all()
                     return False
+                first = self.waiters[0]
+                fits = (
+                    self.active < self.max_active
+                    and self.used_bytes + amount <= self.capacity_bytes
+                )
+                first_fits = (
+                    self.active < self.max_active
+                    and self.used_bytes + int(first["amount"]) <= self.capacity_bytes
+                )
+                oldest_age = time.monotonic() - float(first["queued_at"])
+                eligible = waiter is first or (
+                    not first_fits and oldest_age < self.max_bypass_seconds
+                )
+                if fits and eligible:
+                    self.waiters.remove(waiter)
+                    self.used_bytes += amount
+                    self.active += 1
+                    self.condition.notify_all()
+                    return True
                 self.condition.wait(timeout=0.25)
-            self.used_bytes += amount
-            return True
 
     def release(self, amount: int) -> None:
         with self.condition:
             self.used_bytes = max(0, self.used_bytes - int(amount))
+            self.active = max(0, self.active - 1)
             self.condition.notify_all()
 
+    def snapshot(self) -> dict[str, Any]:
+        with self.condition:
+            return {
+                "capacity_bytes": self.capacity_bytes,
+                "used_bytes": self.used_bytes,
+                "available_bytes": max(0, self.capacity_bytes - self.used_bytes),
+                "active_tasks": self.active,
+                "max_active_tasks": self.max_active,
+                "waiting_tasks": len(self.waiters),
+            }
 
-_memory_admission = _MemoryAdmission(WEB_MEMORY_SNAPSHOT.usable_bytes)
+
+_memory_admission = _MemoryAdmission(
+    WEB_MEMORY_SNAPSHOT.usable_bytes,
+    max_active=MAX_CONCURRENT_TASKS,
+    max_bypass_seconds=MAX_BYPASS_SECONDS,
+)
 
 
 def run_id() -> str:
@@ -230,6 +298,14 @@ def _public_task(run_id_value: str, task: dict[str, Any]) -> dict[str, Any]:
         "queue_position": _queue_position(run_id_value),
         "stage": task.get("stage", task.get("status", "unknown")),
         "progress_detail": task.get("progress_detail"),
+        "resource_status": {
+            "memory_reservation_bytes": task.get("memory_reservation_bytes"),
+            "request_retries": task.get("request_retries", 0),
+            "request_timeouts": task.get("request_timeouts", 0),
+            "global_request_limit": GLOBAL_REQUEST_LIMIT,
+            "profile": RESOURCE_PROFILE,
+            "admission": _memory_admission.snapshot(),
+        },
         "validation": (
             {
                 "valid": validation.get("valid"),
@@ -559,6 +635,13 @@ def _normalize_params(body: dict[str, Any]) -> dict[str, Any]:
         "block_size": _as_int(body.get("blockSize") or body.get("block_size"), "block_size", 256, 16, 433),
         "checkpoint_every": _as_int(body.get("checkpointInterval") or body.get("checkpoint_every"), "checkpoint_every", 8, 1, 10000),
         "max_retries": _as_int(body.get("maxRetries") or body.get("max_retries"), "max_retries", 6, 0, 20),
+        "request_timeout_seconds": _as_int(
+            body.get("requestTimeoutSeconds") or body.get("request_timeout_seconds"),
+            "request_timeout_seconds",
+            300,
+            10,
+            3600,
+        ),
         "workers": _as_int(body.get("workers"), "workers", 2 if workflow == "grid" else 1, 1, 8),
         "chunk_size": _as_int(body.get("chunkSize") or body.get("chunk_size"), "chunk_size", 1000, 1, 10000),
         "page_size": _as_int(body.get("pageSize") or body.get("page_size"), "page_size", 1000, 1, 10000),
@@ -859,10 +942,14 @@ def _build_cmd(
             str(params.get("resolved_workers", params["workers"])),
             "--global-request-limit",
             str(GLOBAL_REQUEST_LIMIT),
+            "--resource-profile",
+            RESOURCE_PROFILE,
             "--resource-state-dir",
             str(RESOURCE_STATE_ROOT),
             "--max-retries",
             str(params["max_retries"]),
+            "--request-timeout-seconds",
+            str(params.get("request_timeout_seconds", 300)),
             "--checkpoint-every",
             str(params["checkpoint_every"]),
         ]
@@ -894,10 +981,14 @@ def _build_cmd(
         str(params.get("resolved_workers", params["workers"])),
         "--global-request-limit",
         str(GLOBAL_REQUEST_LIMIT),
+        "--resource-profile",
+        RESOURCE_PROFILE,
         "--resource-state-dir",
         str(RESOURCE_STATE_ROOT),
         "--max-retries",
         str(params["max_retries"]),
+        "--request-timeout-seconds",
+        str(params.get("request_timeout_seconds", 300)),
         "--chunk-size",
         str(params.get("chunk_size", 1000)),
         "--page-size",
@@ -932,6 +1023,10 @@ def _update_progress(rid: str, line: str) -> None:
                 if task is None:
                     return
                 task["progress_detail"] = event
+                if event.get("event") == "request_retry":
+                    task["request_retries"] = int(task.get("request_retries", 0)) + 1
+                elif event.get("event") == "request_timeout":
+                    task["request_timeouts"] = int(task.get("request_timeouts", 0)) + 1
                 grid_ids = task.get("params", {}).get("grid_ids", [])
                 grid_id = event.get("grid_id")
                 if event.get("event") == "grid_start" and grid_id:
@@ -1193,7 +1288,7 @@ def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
             task["stage"] = "waiting_resources"
             task["memory_reservation_bytes"] = admitted_bytes
             _persist_task(rid)
-        if not _memory_admission.acquire(admitted_bytes, cancel_event):
+        if not _memory_admission.acquire(admitted_bytes, cancel_event, request_id=rid):
             with _task_lock:
                 task = _tasks[rid]
                 task["status"] = "cancelled"
@@ -1343,10 +1438,10 @@ def _point_source_crs(path: Path, layer: str | None = None) -> str:
     if suffix == ".csv":
         return "EPSG:4326 (lon/lat columns)"
     try:
-        import geopandas as gpd
+        import pyogrio
 
-        frame = gpd.read_parquet(path) if suffix == ".parquet" else gpd.read_file(path, layer=layer)
-        return frame.crs.to_string() if frame.crs is not None else "missing/undefined"
+        info = pyogrio.read_info(path, layer=layer)
+        return str(info.get("crs") or "missing/undefined")
     except Exception:
         return "EPSG:4326 (lon/lat table)" if suffix == ".parquet" else "unavailable"
 
@@ -1355,14 +1450,17 @@ def _inspect_point_geometry(path: Path, layer: str | None = None) -> list[str]:
     """Require vector point inputs to contain only Point/MultiPoint features."""
     if path.suffix.lower() not in {".shp", ".gpkg", ".geojson", ".json"}:
         return []
-    import geopandas as gpd
+    import pyogrio
 
-    frame = gpd.read_file(path, layer=layer)
-    if frame.empty:
+    info = pyogrio.read_info(path, layer=layer)
+    if int(info.get("features") or 0) == 0:
         raise ValueError("Point vector is empty")
-    if frame.crs is None:
+    if not info.get("crs"):
         raise ValueError("Point vector has no CRS; a Shapefile must include its .prj file")
-    geometry_types = sorted(set(frame.geometry.dropna().geom_type.astype(str)))
+    geometry_type = str(info.get("geometry_type") or "Unknown")
+    if geometry_type.endswith(" Z"):
+        geometry_type = geometry_type[:-2]
+    geometry_types = [geometry_type]
     invalid = [name for name in geometry_types if name not in {"Point", "MultiPoint"}]
     if invalid:
         raise ValueError(
@@ -1370,8 +1468,6 @@ def _inspect_point_geometry(path: Path, layer: str | None = None) -> list[str]:
             + ", ".join(invalid)
             + ". Convert polygons to points before uploading."
         )
-    if frame.geometry.isna().any() or frame.geometry.is_empty.any():
-        raise ValueError("Point vector contains null or empty geometry")
     return geometry_types
 
 
@@ -1509,8 +1605,11 @@ def capabilities() -> Response:
             "grid_schemes": ["mgrs", "tessera_0p1", "reference"],
             "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
             "max_queued_tasks": MAX_QUEUED_TASKS,
+            "max_bypass_seconds": MAX_BYPASS_SECONDS,
             "global_request_limit": GLOBAL_REQUEST_LIMIT,
+            "resource_profile": RESOURCE_PROFILE,
             "memory": WEB_MEMORY_SNAPSHOT.as_dict(),
+            "resource_admission": _memory_admission.snapshot(),
             "resource_state_root": str(RESOURCE_STATE_ROOT),
             "max_grid_count": MAX_GRID_COUNT,
             "max_raw_gib": MAX_RAW_BYTES / 1024**3,
@@ -1644,22 +1743,27 @@ def plan_points() -> Response:
         plan_dir.mkdir(parents=True)
         primary = _save_point_uploads(plan_dir)
         geometry_types = _inspect_point_geometry(primary, params["layer"] or None)
-        frame = load_point_source(
+        source = PointSource.open(
             primary,
             layer=params["layer"] or None,
             geometry_mode=params["geometry_mode"],
             id_field=params["id_field"] or None,
             reference_grid=params["reference_grid"] or None,
             max_points=params["max_points"],
+            read_batch_size=max(params["chunk_size"], 10_000),
         )
-        _, report = validate_point_table(
-            frame, params["years"], chunk_size=params["chunk_size"]
+        report = preflight_point_source(
+            source,
+            params["years"],
+            chunk_size=params["chunk_size"],
+            audit_db=plan_dir / "point_preflight.sqlite",
         )
         if report.get("errors"):
             raise ValueError("; ".join(report["errors"]))
         params["samples_path"] = str(primary.resolve())
-        params["sample_count"] = int(len(frame))
-        raw_bytes = len(frame) * len(params["years"]) * 64 * 4
+        params["sample_count"] = int(report["rows"])
+        params["sample_sha256"] = report["sample_sha256"]
+        raw_bytes = report["rows"] * len(params["years"]) * 64 * 4
         resources = plan_point_resources(
             chunk_size=params["chunk_size"],
             years=len(params["years"]),

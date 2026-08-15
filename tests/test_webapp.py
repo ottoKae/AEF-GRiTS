@@ -81,6 +81,32 @@ def test_memory_admission_blocks_until_capacity_is_released():
     assert acquired.is_set()
 
 
+def test_memory_admission_backfills_without_starving_oldest():
+    admission = web._MemoryAdmission(10, max_active=2, max_bypass_seconds=1)
+    cancel = threading.Event()
+    assert admission.acquire(7, cancel, "running")
+    order = []
+
+    def acquire(name, amount):
+        assert admission.acquire(amount, cancel, name)
+        order.append(name)
+        if name == "small":
+            admission.release(amount)
+
+    large = threading.Thread(target=acquire, args=("large", 5))
+    small = threading.Thread(target=acquire, args=("small", 3))
+    large.start()
+    time.sleep(0.03)
+    small.start()
+    small.join(timeout=2)
+    assert order == ["small"]
+    admission.release(7)
+    large.join(timeout=2)
+    assert order == ["small", "large"]
+    admission.release(5)
+    assert admission.snapshot()["active_tasks"] == 0
+
+
 def test_point_command_requires_and_passes_samples(tmp_path):
     params = {
         "workflow": "points",

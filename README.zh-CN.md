@@ -20,6 +20,16 @@ AEF-GRiTS用于从Google Earth Engine直接下载年度AlphaEarth Foundation
 - 提供点位、窗口、bbox及模型patch读取器。
 - 仓库内置全球MGRS格网，不依赖其他源码仓库。
 
+## 输出结构
+
+| 工作流 | 主要产物 | 辅助文件 |
+|---|---|---|
+| 点位 | Parquet | `catalog.parquet`、验证/报告JSON |
+| 连续格网 | Zarr/grid_ID | `catalog.parquet`、进度/报告JSON |
+| Web任务 | 与命令行相同 | 任务日志、事件、验证和复现信息 |
+
+下载数据、认证信息、日志、任务状态和本地输出均不会进入Git。
+
 ## 快速安装
 
 安装Miniforge或Conda，克隆仓库后执行：
@@ -158,16 +168,6 @@ python scripts/resolve_aef_grid_ids.py \
 ```
 
 `aef_grits/data/mgrs.parquet`是MGRS空间边界的权威来源。
-
-## 输出结构
-
-| 工作流 | 主要产物 | 辅助文件 |
-|---|---|---|
-| 点位 | Parquet分片 | `catalog.parquet`、验证/报告JSON |
-| 连续格网 | 每个grid ID一个Zarr | `catalog.parquet`、进度/报告JSON |
-| Web任务 | 与命令行相同 | 任务日志、事件、验证和复现信息 |
-
-下载数据、认证信息、日志、任务状态和本地输出均不会进入Git。
 
 ## 内存受限服务器并发
 

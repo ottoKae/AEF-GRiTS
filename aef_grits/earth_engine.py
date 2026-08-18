@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+import http.client
 import random
 import socket
+import ssl
 import time
 from typing import Any, Callable
 
@@ -67,6 +69,10 @@ class EarthEngineRequestError(RuntimeError):
         return self.classification in {"retryable", "timeout"}
 
 
+class EarthEngineResponseError(RuntimeError):
+    """A transient response-body/schema failure safe to retry."""
+
+
 def _http_status(exc: Exception) -> int | None:
     for candidate in (exc, getattr(exc, "response", None), getattr(exc, "resp", None)):
         if candidate is None:
@@ -104,9 +110,34 @@ def classify_request_error(exc: Exception) -> str:
         "unknown band",
         "schema",
         "not found",
+        "certificate verify failed",
+        "hostname mismatch",
     )
     if status in {400, 401, 403, 404} or any(token in message for token in permanent_tokens):
         return "permanent"
+    if isinstance(
+        exc,
+        (
+            ConnectionError,
+            EarthEngineResponseError,
+            http.client.IncompleteRead,
+            http.client.RemoteDisconnected,
+            ssl.SSLEOFError,
+        ),
+    ):
+        return "retryable"
+    retryable_names = (
+        "chunkedencodingerror",
+        "connectionerror",
+        "incompleteread",
+        "protocolerror",
+        "readtimeouterror",
+        "remotedisconnected",
+        "responsevalidationerror",
+        "ssleoferror",
+    )
+    if any(token in name for token in retryable_names):
+        return "retryable"
     retryable_tokens = (
         "connection reset",
         "connection aborted",
@@ -119,6 +150,13 @@ def classify_request_error(exc: Exception) -> str:
         "quota exceeded",
         "service unavailable",
         "remote end closed",
+        "connection broken",
+        "eof occurred in violation of protocol",
+        "incomplete read",
+        "peer closed connection",
+        "response ended prematurely",
+        "tls/ssl connection has been closed",
+        "unexpected eof while reading",
     )
     if any(token in message for token in retryable_tokens):
         return "retryable"

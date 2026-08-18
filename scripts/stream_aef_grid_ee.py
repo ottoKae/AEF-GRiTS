@@ -37,6 +37,7 @@ from aef_grits.earth_engine import (  # noqa: E402
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     DATASET,
     EarthEngineRequestError,
+    EarthEngineResponseError,
     RequestPolicy,
     annual_image,
     execute_with_retry,
@@ -137,6 +138,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-high-watermark", type=float, default=0.80)
     parser.add_argument("--memory-critical-watermark", type=float, default=0.90)
     parser.add_argument("--max-retries", type=int, default=6)
+    parser.add_argument(
+        "--adaptive-request-splitting",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Split a repeatedly truncated computePixels window into smaller "
+            "requests without changing the Zarr/checkpoint layout (default: enabled)"
+        ),
+    )
+    parser.add_argument(
+        "--split-after-retries",
+        type=int,
+        default=2,
+        help="Retries at each splittable request size before subdivision (default: 2)",
+    )
+    parser.add_argument(
+        "--min-request-block-size",
+        type=int,
+        default=64,
+        help="Smallest adaptive computePixels window edge in pixels (default: 64)",
+    )
     parser.add_argument(
         "--request-timeout-seconds",
         type=float,
@@ -308,43 +330,145 @@ def _fetch_block(
     request_pool,
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     telemetry: RunTelemetry | None = None,
+    adaptive_request_splitting: bool = True,
+    split_after_retries: int = 2,
+    min_request_block_size: int = 64,
 ):
-    request = {
-        "expression": image,
-        "fileFormat": "NUMPY_NDARRAY",
-        "bandIds": list(AEF_BANDS),
-        "grid": _pixel_grid(grid, block),
-        "workloadTag": "aef_grits_grid",
-    }
-    def fetch():
-        token_context = telemetry.request_token(request_pool) if telemetry else request_pool.token()
-        with token_context:
-            return ee.data.computePixels(request)
+    def record_event(name: str, payload: dict) -> None:
+        if telemetry is not None:
+            telemetry.request_event(name, payload)
+        emit_event(name, workflow="grid", **payload)
+        if telemetry is not None and name in {
+            "request_retry",
+            "request_timeout",
+            "request_failed",
+        }:
+            warning = telemetry.consume_network_warning()
+            if warning is not None:
+                emit_event("network_health_warning", workflow="grid", **warning)
 
-    response = execute_with_retry(
-        f"computePixels:{block['key']}",
-        fetch,
-        RequestPolicy(
-            timeout_seconds=request_timeout_seconds,
-            max_retries=max_retries,
-        ),
-        event=lambda name, payload: (
-            telemetry.request_event(name, payload) if telemetry else None,
-            emit_event(name, workflow="grid", **payload),
-        ),
-    )
-    try:
-        values = np.stack(
-            [np.asarray(response[band], dtype=np.float32) for band in AEF_BANDS]
+    def decode_response(response, current: dict) -> np.ndarray:
+        expected = (int(current["height"]), int(current["width"]))
+        try:
+            arrays = []
+            for band in AEF_BANDS:
+                array = np.asarray(response[band], dtype=np.float32)
+                if array.shape != expected:
+                    raise EarthEngineResponseError(
+                        f"band {band} has shape {array.shape}, expected {expected}"
+                    )
+                arrays.append(array)
+            values = np.stack(arrays)
+        except EarthEngineResponseError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EarthEngineResponseError(
+                f"incomplete computePixels response for {current['key']}: {exc}"
+            ) from exc
+        values[values == NODATA] = np.nan
+        return values
+
+    def fetch_exact(current: dict, retries: int) -> np.ndarray:
+        request = {
+            "expression": image,
+            "fileFormat": "NUMPY_NDARRAY",
+            "bandIds": list(AEF_BANDS),
+            "grid": _pixel_grid(grid, current),
+            "workloadTag": "aef_grits_grid",
+        }
+
+        def fetch():
+            token_context = (
+                telemetry.request_token(request_pool)
+                if telemetry
+                else request_pool.token()
+            )
+            with token_context:
+                response = ee.data.computePixels(request)
+            return decode_response(response, current)
+
+        values = execute_with_retry(
+            f"computePixels:{current['key']}",
+            fetch,
+            RequestPolicy(
+                timeout_seconds=request_timeout_seconds,
+                max_retries=retries,
+            ),
+            event=record_event,
         )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Earth Engine response schema is invalid for block {block['key']}: {exc}"
-        ) from exc
-    values[values == NODATA] = np.nan
-    if telemetry is not None:
-        telemetry.add_received_bytes(values.nbytes)
-    return block, values
+        if telemetry is not None:
+            telemetry.add_received_bytes(values.nbytes)
+        return values
+
+    def split(current: dict) -> list[dict]:
+        row_sizes = [current["height"]]
+        column_sizes = [current["width"]]
+        if current["height"] > min_request_block_size:
+            first = current["height"] // 2
+            row_sizes = [first, current["height"] - first]
+        if current["width"] > min_request_block_size:
+            first = current["width"] // 2
+            column_sizes = [first, current["width"] - first]
+        children = []
+        row_offset = 0
+        child_index = 0
+        for height in row_sizes:
+            column_offset = 0
+            for width in column_sizes:
+                child = dict(current)
+                child.update(
+                    {
+                        "row": current["row"] + row_offset,
+                        "column": current["column"] + column_offset,
+                        "height": height,
+                        "width": width,
+                        "key": f"{current['key']}/split{child_index}",
+                    }
+                )
+                children.append(child)
+                child_index += 1
+                column_offset += width
+            row_offset += height
+        return children
+
+    def fetch_adaptive(current: dict, depth: int = 0) -> np.ndarray:
+        can_split = adaptive_request_splitting and (
+            current["height"] > min_request_block_size
+            or current["width"] > min_request_block_size
+        )
+        retries = min(max_retries, split_after_retries) if can_split else max_retries
+        try:
+            return fetch_exact(current, retries)
+        except EarthEngineRequestError as exc:
+            if not can_split or not exc.resumable:
+                raise
+            children = split(current)
+            payload = {
+                "operation": f"computePixels:{current['key']}",
+                "classification": exc.classification,
+                "depth": depth,
+                "parent_height": current["height"],
+                "parent_width": current["width"],
+                "child_count": len(children),
+                "min_request_block_size": min_request_block_size,
+            }
+            record_event("request_split", payload)
+            combined = np.empty(
+                (len(AEF_BANDS), current["height"], current["width"]),
+                dtype=np.float32,
+            )
+            for child in children:
+                values = fetch_adaptive(child, depth + 1)
+                row = child["row"] - current["row"]
+                column = child["column"] - current["column"]
+                combined[
+                    :,
+                    row : row + child["height"],
+                    column : column + child["width"],
+                ] = values
+            return combined
+
+    return block, fetch_adaptive(block)
 
 
 def _create_store(
@@ -615,6 +739,9 @@ def _stream_one(
                 request_pool,
                 getattr(args, "request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
                 telemetry,
+                getattr(args, "adaptive_request_splitting", True),
+                getattr(args, "split_after_retries", 2),
+                getattr(args, "min_request_block_size", 64),
             )
             active[future] = block
             return True
@@ -765,6 +892,15 @@ def _stream_one(
         ),
         max_retries=args.max_retries,
     ).as_dict()
+    report["request_policy"].update(
+        {
+            "adaptive_request_splitting": getattr(
+                args, "adaptive_request_splitting", True
+            ),
+            "split_after_retries": getattr(args, "split_after_retries", 2),
+            "min_request_block_size": getattr(args, "min_request_block_size", 64),
+        }
+    )
     report["telemetry"] = telemetry.report()
     report["resource_profile"] = getattr(args, "resolved_resource_profile", None)
     report.update(memory_guard.report())
@@ -799,6 +935,10 @@ def main() -> None:
         raise ValueError("commit-timeout must be positive")
     if args.request_timeout_seconds <= 0:
         raise ValueError("request-timeout-seconds must be positive")
+    if args.split_after_retries < 0:
+        raise ValueError("split-after-retries must be non-negative")
+    if args.min_request_block_size <= 0:
+        raise ValueError("min-request-block-size must be positive")
     if args.global_request_limit <= 0:
         raise ValueError("global-request-limit must be positive")
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
@@ -880,10 +1020,15 @@ def main() -> None:
             "memory": snapshot.as_dict(),
             "resource_plan": resource_plan.as_dict(),
             "resource_state_dir": str(resource_root),
-            "request_policy": RequestPolicy(
-                timeout_seconds=args.request_timeout_seconds,
-                max_retries=args.max_retries,
-            ).as_dict(),
+            "request_policy": {
+                **RequestPolicy(
+                    timeout_seconds=args.request_timeout_seconds,
+                    max_retries=args.max_retries,
+                ).as_dict(),
+                "adaptive_request_splitting": args.adaptive_request_splitting,
+                "split_after_retries": args.split_after_retries,
+                "min_request_block_size": args.min_request_block_size,
+            },
             "resource_profile": profile,
             "note": "raw_gib is uncompressed float32 size; lossless Zarr size depends on feature entropy",
         }
@@ -950,6 +1095,13 @@ def main() -> None:
         timeout_seconds=args.request_timeout_seconds,
         max_retries=args.max_retries,
     ).as_dict()
+    summary["request_policy"].update(
+        {
+            "adaptive_request_splitting": args.adaptive_request_splitting,
+            "split_after_retries": args.split_after_retries,
+            "min_request_block_size": args.min_request_block_size,
+        }
+    )
     summary["resource_profile"] = profile
     summary["telemetry"] = run_telemetry.report()
     summary["resource_state_dir"] = str(resource_root)

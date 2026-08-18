@@ -1,4 +1,5 @@
 import json
+import http.client
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -26,10 +27,13 @@ from scripts.stream_aef_grid_ee import (
     DEFAULT_INNER_CHUNK,
     DEFAULT_SHARD_SIZE,
     _create_store,
+    _fetch_block,
     _pixel_grid,
     _stream_one,
 )
 import scripts.stream_aef_grid_ee as grid_stream
+from aef_grits.resource_control import TokenPool
+from aef_grits.telemetry import RunTelemetry
 
 
 def test_production_zarr_layout_defaults(tmp_path):
@@ -71,6 +75,95 @@ def test_compute_pixels_grid_is_window_aligned():
     assert affine["translateY"] == 9_999_970.0
     assert affine["scaleX"] == 10.0
     assert affine["scaleY"] == -10.0
+
+
+def test_compute_pixels_adaptively_splits_truncated_response(tmp_path):
+    calls = []
+
+    class FakeData:
+        @staticmethod
+        def computePixels(request):
+            height = request["grid"]["dimensions"]["height"]
+            width = request["grid"]["dimensions"]["width"]
+            calls.append((height, width))
+            if height > 4 or width > 4:
+                raise http.client.IncompleteRead(b"partial", 100)
+            return {
+                band: np.full((height, width), index, dtype=np.float32)
+                for index, band in enumerate(grid_stream.AEF_BANDS)
+            }
+
+    block = {
+        "time_index": 0,
+        "year": 2025,
+        "row": 0,
+        "column": 0,
+        "height": 8,
+        "width": 8,
+        "key": "2025:0:0",
+    }
+    telemetry = RunTelemetry()
+    returned, values = _fetch_block(
+        SimpleNamespace(data=FakeData),
+        object(),
+        _grid(),
+        block,
+        2,
+        TokenPool(tmp_path / "tokens", 1),
+        telemetry=telemetry,
+        adaptive_request_splitting=True,
+        split_after_retries=0,
+        min_request_block_size=4,
+    )
+    assert returned is block
+    assert values.shape == (64, 8, 8)
+    np.testing.assert_array_equal(values[:, 0, 0], np.arange(64, dtype=np.float32))
+    assert calls == [(8, 8), (4, 4), (4, 4), (4, 4), (4, 4)]
+    report = telemetry.report()
+    assert report["request_splits"] == 1
+    assert report["requests_succeeded"] == 4
+    assert report["earth_engine_response_bytes_estimated"] == values.nbytes
+
+
+def test_compute_pixels_retries_incomplete_schema(tmp_path):
+    calls = 0
+
+    class FakeData:
+        @staticmethod
+        def computePixels(request):
+            nonlocal calls
+            calls += 1
+            height = request["grid"]["dimensions"]["height"]
+            width = request["grid"]["dimensions"]["width"]
+            bands = grid_stream.AEF_BANDS[:-1] if calls == 1 else grid_stream.AEF_BANDS
+            return {
+                band: np.zeros((height, width), dtype=np.float32)
+                for band in bands
+            }
+
+    block = {
+        "time_index": 0,
+        "year": 2025,
+        "row": 0,
+        "column": 0,
+        "height": 4,
+        "width": 4,
+        "key": "2025:0:0",
+    }
+    _, values = _fetch_block(
+        SimpleNamespace(data=FakeData),
+        object(),
+        _grid(),
+        block,
+        1,
+        TokenPool(tmp_path / "tokens", 1),
+        telemetry=RunTelemetry(),
+        adaptive_request_splitting=False,
+        split_after_retries=0,
+        min_request_block_size=4,
+    )
+    assert calls == 2
+    assert values.shape == (64, 4, 4)
 
 
 def test_local_store_samples_touched_chunks(tmp_path):

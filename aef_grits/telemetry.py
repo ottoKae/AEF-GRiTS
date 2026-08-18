@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any
 
+from .network_health import NetworkHealthMonitor
+
 
 def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
@@ -25,7 +27,11 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 class RunTelemetry:
     """Collect bounded request, token, transfer and write measurements."""
 
-    def __init__(self, max_latency_samples: int = 100_000):
+    def __init__(
+        self,
+        max_latency_samples: int = 100_000,
+        network_monitor: NetworkHealthMonitor | None = None,
+    ):
         self._lock = threading.Lock()
         self._latencies: list[float] = []
         self._max_latency_samples = max(1, int(max_latency_samples))
@@ -34,10 +40,12 @@ class RunTelemetry:
         self.requests_failed = 0
         self.request_retries = 0
         self.request_timeouts = 0
+        self.request_splits = 0
         self.bytes_received = 0
         self.token_wait_seconds = 0.0
         self.write_seconds = 0.0
         self.delivery_seconds = 0.0
+        self.network_monitor = network_monitor or NetworkHealthMonitor()
 
     def request_event(self, name: str, payload: dict[str, Any]) -> None:
         with self._lock:
@@ -52,6 +60,8 @@ class RunTelemetry:
                 self.requests_failed += 1
             elif name == "request_failed":
                 self.requests_failed += 1
+            elif name == "request_split":
+                self.request_splits += 1
             elapsed = payload.get("elapsed_seconds")
             if elapsed is not None and name in {
                 "request_succeeded",
@@ -93,15 +103,19 @@ class RunTelemetry:
         with self._lock:
             self.bytes_received += max(0, int(count))
 
+    def consume_network_warning(self) -> dict[str, Any] | None:
+        return self.network_monitor.consume_warning()
+
     def report(self) -> dict[str, Any]:
         with self._lock:
             latencies = list(self._latencies)
-            return {
+            result = {
                 "requests_started": self.requests_started,
                 "requests_succeeded": self.requests_succeeded,
                 "requests_failed": self.requests_failed,
                 "request_retries": self.request_retries,
                 "request_timeouts": self.request_timeouts,
+                "request_splits": self.request_splits,
                 "request_latency_seconds_p50": _percentile(latencies, 0.50),
                 "request_latency_seconds_p95": _percentile(latencies, 0.95),
                 "request_latency_seconds_max": max(latencies) if latencies else None,
@@ -111,3 +125,5 @@ class RunTelemetry:
                 "zarr_or_parquet_write_seconds": self.write_seconds,
                 "final_delivery_seconds": self.delivery_seconds,
             }
+        result["network_health"] = self.network_monitor.report()
+        return result

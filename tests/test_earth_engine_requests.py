@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import http.client
+import ssl
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +27,27 @@ def test_request_error_classification_is_conservative():
     assert classify_request_error(StatusError(503, "backend")) == "retryable"
     assert classify_request_error(StatusError(403, "permission denied")) == "permanent"
     assert classify_request_error(ValueError("bad local expression")) == "permanent"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        http.client.IncompleteRead(b"partial", 100),
+        http.client.RemoteDisconnected("remote end closed connection"),
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+        RuntimeError("HTTPS response ended prematurely"),
+        RuntimeError("ProtocolError: connection broken by IncompleteRead"),
+    ],
+)
+def test_truncated_https_responses_are_retryable(error):
+    assert classify_request_error(error) == "retryable"
+
+
+def test_certificate_verification_failure_is_permanent():
+    assert (
+        classify_request_error(RuntimeError("certificate verify failed"))
+        == "permanent"
+    )
 
 
 def test_retry_policy_emits_attempts_and_bounded_delays():

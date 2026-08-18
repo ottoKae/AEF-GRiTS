@@ -208,6 +208,11 @@ Every Earth Engine attempt has an explicit deadline (default 300 seconds),
 classified retries, bounded backoff, and resumable failure events. Use
 `--request-timeout-seconds` to change it. Conservative presets are available
 through `--resource-profile workstation-auto|low-memory-1g|server-8g|server-16g`.
+Truncated HTTPS/TLS responses are retryable. Grid requests that still fail are
+adaptively split from the default 256-pixel window down to 64-pixel windows,
+without changing the Zarr layout or parent-block checkpoint. On Linux, reports
+also record physical-interface RX drop/error deltas and emit a warning if they
+increase; retries protect progress but do not treat NIC packet loss as healthy.
 
 ## Resolve grid IDs from an AOI
 

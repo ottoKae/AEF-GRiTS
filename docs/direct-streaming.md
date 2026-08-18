@@ -49,6 +49,22 @@ Earth Engine limits each `computePixels` response to 48 MB uncompressed. The
 default 256-pixel block uses about 16.8 MB. Fetches may run concurrently, but all
 Zarr writes occur in the main process so two requests never mutate the same shard.
 
+`IncompleteRead`, premature TLS EOF, remote disconnects and incomplete pixel
+schemas are classified as retryable transport failures. If a 256-pixel request
+still fails after the configured split-level retries, it is subdivided into
+smaller windows (128 and, if necessary, 64 pixels). The successful children are
+reassembled in memory and committed under the original parent checkpoint key.
+Consequently, adaptive recovery does not change the Zarr chunks, shards, request
+signature or existing progress ledger. It can be controlled with
+`--[no-]adaptive-request-splitting`, `--split-after-retries` and
+`--min-request-block-size`.
+
+On Linux, the run telemetry snapshots kernel RX drop/error counters for active
+physical interfaces. Counter increases are emitted as
+`network_health_warning` events and retained in the final report. This is
+diagnostic only: AEF-GRiTS does not modify NIC settings and successful retries do
+not suppress evidence of an unhealthy physical link.
+
 All three providers emit the same immutable grid contract and the same
 `embeddings(time,band,y,x)` layout. AEF point and grid extraction are fixed at
 10 m; any coarser comparison is a separate downstream product.

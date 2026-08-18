@@ -188,6 +188,10 @@ export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
 每次Earth Engine请求都有明确deadline（默认300秒）、错误分类、有界退避和
 可恢复失败事件。可用`--request-timeout-seconds`修改deadline。资源配置可选
 `workstation-auto`、`low-memory-1g`、`server-8g`和`server-16g`。
+HTTPS/TLS响应截断会进入可恢复重试。格网请求仍失败时，程序会把默认256像素
+请求窗口自适应拆分，最低拆到64像素，但不改变Zarr布局和父块checkpoint。
+Linux报告还会记录物理网卡RX丢包/错误计数增量；计数增长时明确告警，重试只
+保护下载进度，不会把持续的网卡丢包误报为健康。
 
 ## 读取本地Zarr
 

@@ -664,6 +664,9 @@ input:disabled { opacity: .5; cursor: not-allowed; }
     <h1>AEF-GRiTS</h1>
     <span class="header-tag">嵌入式特征数据下载工具</span>
     <span class="spacer"></span>
+    <span id="auth-state" style="font-size:13px;color:var(--text-sec)">认证检查中</span>
+    <a id="auth-login" href="/api/auth/login" style="display:none">登录 Earth Engine</a>
+    <button id="auth-logout" type="button" onclick="logoutAuth()" style="display:none">退出</button>
     <a href="https://github.com/ottoKae/AEF-GRiTS" target="_blank">GitHub</a>
   </div>
 
@@ -718,6 +721,11 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 
         <div class="step-card">
           <div class="step-title"><span class="step-number">3</span>选择年份与存储位置</div>
+          <div class="field" style="margin-bottom:12px">
+            <label>Earth Engine Project</label>
+            <input type="text" id="project" placeholder="YOUR_GEE_PROJECT" autocomplete="off">
+            <div class="input-help">使用您当前Google账号有权访问并已启用Earth Engine API的Cloud Project。</div>
+          </div>
           <div class="section-title">年份（可多选）</div>
           <div class="year-tags-scroll" id="simple-year-tags"></div>
           <div id="simple-year-all-wrap" style="display:flex;align-items:center;gap:8px;margin-top:7px">
@@ -752,7 +760,7 @@ input:disabled { opacity: .5; cursor: not-allowed; }
           <div class="section-title">项目配置</div>
           <div class="field">
             <label>Google Earth Engine 项目 ID *</label>
-            <input type="text" id="project" placeholder="例如：my-gcp-project">
+            <input type="text" id="legacy-project" placeholder="例如：my-gcp-project">
           </div>
           <div class="field" style="margin-top:8px">
             <label>输出子目录（位于服务端配置的 output 根目录内）</label>
@@ -1005,6 +1013,7 @@ let baseLayerMode = 'road'; // 'road' | 'sat' | 'grid'
 let currentWorkflow = 'point';
 let pointSourceType = 'csv';
 let tasks = [];
+let authReady = true;
 let mapReady = false;
 let eventSources = {};       // runId -> EventSource (live log/progress)
 let taskLogs = {};           // runId -> bounded recent log lines
@@ -1487,7 +1496,7 @@ function updateWorkflowFields() {
 
 // ── Form validation ──────────────────────────────────────────────────────────
 function validateForm() {
-  const project = document.getElementById('project').value.trim() || 'YOUR_GEE_PROJECT';
+  const project = document.getElementById('project').value.trim();
   const hasAOI = aoiRings.length >= 1 && aoiRings.every(r => r.length >= 3);
   const bbox = [parseFloat(document.getElementById('bbox_w').value),
                   parseFloat(document.getElementById('bbox_e').value),
@@ -1504,7 +1513,7 @@ function validateForm() {
   } else {
     workflowReady = hasAOI || hasBbox;
   }
-  document.getElementById('simple-btn-submit').disabled = !project || !yearsReady || !workflowReady;
+  document.getElementById('simple-btn-submit').disabled = !authReady || !project || !yearsReady || !workflowReady;
 }
 
 // ── Task submission ──────────────────────────────────────────────────────────
@@ -1524,7 +1533,7 @@ function currentBbox() {
 }
 
 function buildPayload() {
-  const project = document.getElementById('project').value.trim() || 'YOUR_GEE_PROJECT';
+  const project = document.getElementById('project').value.trim();
   const output = document.getElementById('simple-output').value.trim();
   const blockSize = parseInt(document.getElementById('block-size').value) || 256;
   const maxRetries = Number.parseInt(document.getElementById('max-retries').value);
@@ -1612,7 +1621,7 @@ async function submitTask() {
 
 function loadTasks() {
   fetch('/api/tasks')
-    .then(r => r.json())
+    .then(async r => r.ok ? r.json() : [])
     .then(data => {
       tasks = data;
       renderTasks();
@@ -1755,7 +1764,8 @@ function renderTasks() {
         ${t.output_dir ? '<button class="task-action-btn" title="复制完整输出路径" onclick="copyOutputPath(\'' + t.run_id + '\')">路径</button>' : ''}
         ${t.status === 'done' ? '<button class="task-action-btn" onclick="showResults(\'' + t.run_id + '\')">结果</button>' : ''}
         ${['queued','running','cancelling'].includes(t.status) ? '<button class="task-action-btn danger" onclick="cancelTask(\'' + t.run_id + '\')">取消</button>' : ''}
-        ${['done','failed','error','cancelled','interrupted'].includes(t.status) ? '<button class="task-action-btn danger" onclick="deleteTask(\'' + t.run_id + '\')">隐藏</button>' : ''}
+        ${t.status === 'auth_required' ? '<button class="task-action-btn" onclick="resumeTask(\'' + t.run_id + '\')">重新认证后续传</button>' : ''}
+        ${['done','failed','error','cancelled','interrupted','auth_required'].includes(t.status) ? '<button class="task-action-btn danger" onclick="deleteTask(\'' + t.run_id + '\')">隐藏</button>' : ''}
       </div>
     `;
     body.appendChild(card);
@@ -1763,7 +1773,20 @@ function renderTasks() {
 }
 
 function taskStatusLabel(status) {
-  return ({queued:'排队',running:'下载中',validating_output:'验证中',done:'完成',failed:'失败',error:'错误',cancelled:'已取消',cancelling:'取消中',interrupted:'已中断'})[status] || status;
+  return ({queued:'排队',running:'下载中',validating_output:'验证中',done:'完成',failed:'失败',error:'错误',cancelled:'已取消',cancelling:'取消中',interrupted:'已中断',auth_required:'需要重新认证'})[status] || status;
+}
+
+async function resumeTask(runId) {
+  try {
+    const project = document.getElementById('project').value.trim();
+    const response = await fetch('/api/tasks/' + runId + '/resume', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({project})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '续传失败');
+    loadTasks();
+  } catch (error) { alert(error.message); }
 }
 
 function scrollTaskDock(direction) {
@@ -1920,13 +1943,48 @@ async function loadCapabilities() {
   } catch (_) { /* built-in supported years remain available offline */ }
 }
 
+async function loadAuthStatus() {
+  const state = document.getElementById('auth-state');
+  const login = document.getElementById('auth-login');
+  const logout = document.getElementById('auth-logout');
+  try {
+    const response = await fetch('/api/auth/status');
+    const data = await response.json();
+    authReady = Boolean(data.authenticated);
+    if (data.mode === 'local') {
+      state.textContent = '本地凭据模式';
+      login.style.display = 'none';
+      logout.style.display = 'none';
+    } else if (data.authenticated) {
+      state.textContent = data.email ? `已登录：${data.email}` : 'Earth Engine 已登录';
+      login.style.display = 'none';
+      logout.style.display = '';
+    } else {
+      state.textContent = '尚未登录 Earth Engine';
+      login.style.display = '';
+      logout.style.display = 'none';
+    }
+  } catch (_) {
+    authReady = false;
+    state.textContent = '无法检查认证状态';
+  }
+  validateForm();
+}
+
+async function logoutAuth() {
+  await fetch('/api/auth/logout', {method:'POST'});
+  await loadAuthStatus();
+  loadTasks();
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 (function bootstrap() {
   buildYearTags();
+  loadAuthStatus();
   loadCapabilities();
   initMap();
 
-  document.getElementById('project').value = 'YOUR_GEE_PROJECT';
+  document.getElementById('project').value = '';
   setGridScheme('mgrs');
   setPointSourceType('csv');
   document.getElementById('simple-output').addEventListener('input', validateForm);

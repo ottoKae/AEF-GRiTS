@@ -6,7 +6,6 @@ import argparse
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 import json
-import os
 from pathlib import Path
 import platform
 import shutil
@@ -15,6 +14,7 @@ import tempfile
 from typing import Any
 
 from aef_grits.storage_safety import isolated_disk_free, mount_for_path
+from aef_grits.auth import discover_credentials
 
 
 PACKAGE_GROUPS = {
@@ -48,6 +48,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mode", choices=("point", "grid", "web", "all"), default="all")
     parser.add_argument("--project", help="Earth Engine quota project to initialize")
     parser.add_argument(
+        "--auth-source",
+        choices=("auto", "earthengine", "adc", "web"),
+        default="auto",
+        help="Existing credential source to inspect (default: auto)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path.cwd() / "outputs",
@@ -63,15 +69,6 @@ def _record(checks: list[dict[str, Any]], name: str, status: str, detail: str) -
     checks.append({"name": name, "status": status, "detail": detail})
 
 
-def _credential_candidates() -> list[Path]:
-    candidates = [Path.home() / ".config" / "earthengine" / "credentials"]
-    explicit = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if explicit:
-        candidates.append(Path(explicit).expanduser())
-    candidates.append(Path.home() / ".config" / "gcloud" / "application_default_credentials.json")
-    return list(dict.fromkeys(path.resolve() for path in candidates))
-
-
 def run_checks(
     *,
     mode: str,
@@ -79,6 +76,7 @@ def run_checks(
     output: Path,
     minimum_free_gib: float,
     skip_ee: bool,
+    auth_source: str = "auto",
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     if sys.version_info >= (3, 10):
@@ -186,23 +184,30 @@ def run_checks(
         except Exception as exc:
             _record(checks, "mgrs_index", "fail", str(exc))
 
-    credentials = [path for path in _credential_candidates() if path.exists()]
+    credentials = [item for item in discover_credentials() if item.available]
     if credentials:
-        _record(checks, "credentials", "pass", ", ".join(map(str, credentials)))
+        detail = ", ".join(
+            f"{item.source} ({item.configured_by})" for item in credentials
+        )
+        _record(checks, "credentials", "pass", detail)
     else:
         _record(checks, "credentials", "warn", "none found; run earthengine authenticate")
 
     if not skip_ee:
-        if not project:
-            _record(checks, "earth_engine", "warn", "not initialized; pass --project PROJECT_ID")
-        else:
-            try:
-                from .earth_engine import initialize
+        try:
+            from .earth_engine import initialize
 
-                initialize(project)
-                _record(checks, "earth_engine", "pass", f"initialized with project={project}")
-            except Exception as exc:
-                _record(checks, "earth_engine", "fail", str(exc))
+            _, resolved = initialize(
+                project, auth_source=auth_source, return_auth=True
+            )
+            _record(
+                checks,
+                "earth_engine",
+                "pass",
+                json.dumps(resolved.public_summary(), sort_keys=True),
+            )
+        except Exception as exc:
+            _record(checks, "earth_engine", "fail", str(exc))
     else:
         _record(checks, "earth_engine", "skip", "online initialization disabled")
 
@@ -216,7 +221,8 @@ def run_checks(
             "machine": platform.machine(),
             "python_executable": sys.executable,
         },
-        "project": project,
+        "project_configured": bool(project),
+        "auth_source": auth_source,
         "output": str(output),
         "checks": checks,
         "failure_count": len(failures),
@@ -233,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         output=args.output,
         minimum_free_gib=args.minimum_free_gib,
         skip_ee=args.skip_ee,
+        auth_source=args.auth_source,
     )
     if args.json:
         print(json.dumps(report, indent=2))

@@ -21,7 +21,7 @@ Windows.
 | Wheel build without dependency isolation | PASS |
 | Wheel contains `mgrs.parquet`, doctor, and streaming scripts | PASS |
 | Environment doctor | PASS — all point/grid dependencies |
-| Earth Engine initialization | PASS — project `YOUR_GEE_PROJECT` |
+| Earth Engine initialization | PASS — project `<redacted-project>` |
 | PROJ transform | PASS — EPSG:4326 to EPSG:32650 |
 | Zarr v3 float32 Zstd-7/no-shuffle round trip | PASS |
 | Packaged authoritative MGRS index | PASS |

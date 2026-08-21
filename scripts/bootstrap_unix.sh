@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ENV_NAME="${AEF_GRITS_ENV_NAME:-aef_grits_download}"
-PROJECT_ID="${1:-${EE_PROJECT:-}}"
+PROJECT_ID="${1:-${AEF_GRITS_PROJECT:-}}"
 
 case "$(uname -s)" in
   Linux|Darwin) ;;
@@ -32,10 +32,10 @@ echo "Environment installed. Activate it with:"
 echo "  conda activate $ENV_NAME"
 echo
 if [[ -n "$PROJECT_ID" ]]; then
-  echo "After activation, authenticate and validate with:"
-  echo "  earthengine authenticate --auth_mode=localhost"
-  echo "  earthengine set_project $PROJECT_ID"
-  echo "  aef-grits-doctor --project $PROJECT_ID --output ./outputs"
+  echo "After activation, explicitly authenticate and validate with:"
+  echo "  aef-grits-auth login --source earthengine --auth-mode localhost --project $PROJECT_ID"
+  echo "  aef-grits-auth verify --source auto --project $PROJECT_ID"
+  echo "  aef-grits-doctor --auth-source auto --project $PROJECT_ID --output ./outputs"
 else
-  echo "Then authenticate and run: aef-grits-doctor --project YOUR_PROJECT_ID"
+  echo "Then run: aef-grits-auth login --source earthengine --auth-mode localhost --project YOUR_GEE_PROJECT"
 fi

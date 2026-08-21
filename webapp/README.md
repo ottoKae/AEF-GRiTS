@@ -1,21 +1,21 @@
-# AEF-GRiTS local web application
+# AEF-GRiTS Web application
 
-This localhost-only application plans and runs the existing AEF-GRiTS point
-and dense-grid streaming commands. It does not maintain a second download
-implementation: every accepted plan is translated into the tested command-line
-interface.
+The application plans and runs the existing AEF-GRiTS point and dense-grid
+streaming commands. It supports a trusted localhost mode and an optional
+per-user OAuth mode for a campus server. It does not maintain a second download
+implementation: every accepted plan becomes the tested command-line interface.
 
 ## Install, test, and start
 
 From the repository root:
 
 ```powershell
-python -m pip install -e ".[gee,geo,stream,web]"
+python -m pip install -e ".[download,web]"
 python webapp/app.py
 ```
 
-Open `http://127.0.0.1:5555`. The server uses the Earth Engine credentials and
-Google Cloud project of the selected Python environment.
+Open `http://127.0.0.1:5555`. Enter a Project your existing Earth Engine/ADC
+identity can use. The download process never starts an interactive login.
 
 Run the API/unit suite and the four browser workflow tests with:
 
@@ -34,7 +34,40 @@ The main screen is intentionally a three-step form:
 
 1. choose **Points** or **Grid**;
 2. choose a CSV/point Shapefile, or choose MGRS/Tessera and set an AOI;
-3. choose years and an output subdirectory, then press **Download**.
+3. enter/confirm the Earth Engine Project, choose years and an output
+   subdirectory, then press **Download**.
+
+## Authentication modes
+
+`AEF_GRITS_WEB_AUTH_MODE=local` is the default. It is suitable for one trusted
+local user and reuses credentials already configured for the service account or
+OS user. No Project is hard-coded in the frontend or repository.
+
+For a shared server, use `AEF_GRITS_WEB_AUTH_MODE=oauth`. Each user explicitly
+clicks **Login Earth Engine**, supplies a Project they can access, and completes
+Project verification before a plan is signed. Plans and tasks are bound to an
+anonymous owner hash, credential version, and Project fingerprint. Users can
+only list, read, cancel, resume, or browse their own outputs.
+
+```bash
+aef-grits-auth vault-init \
+  --database /var/lib/aef-grits/auth/vault.sqlite \
+  --key-file /etc/aef-grits/vault.key
+
+export AEF_GRITS_WEB_AUTH_MODE=oauth
+export AEF_GRITS_WEB_OAUTH_CLIENT=/etc/aef-grits/oauth-client.json
+export AEF_GRITS_WEB_OAUTH_REDIRECT_URI=https://aef.example.edu/api/auth/callback
+export AEF_GRITS_AUTH_VAULT=/var/lib/aef-grits/auth/vault.sqlite
+export AEF_GRITS_AUTH_VAULT_KEY=/etc/aef-grits/vault.key
+export AEF_GRITS_WEB_ALLOWED_DOMAINS=example.edu
+export AEF_GRITS_WEB_TRUSTED_HOSTS=aef.example.edu
+export AEF_GRITS_WEB_PROXY_COUNT=1
+```
+
+Use HTTPS and keep the vault on ext4/XFS. Do not set a server-wide
+`AEF_GRITS_PROJECT` in shared mode. Authorization failure preserves the
+checkpoint and marks the task `auth_required`; the owner explicitly logs in
+and resumes it. See [authentication boundaries](../docs/authentication.md).
 
 Technical retry, chunk, checkpoint and CRS settings are not shown in the main
 form. Safe tested defaults are used. Capacity planning still happens after the
@@ -145,6 +178,15 @@ Optional environment variables:
 | `AEF_GRITS_WEB_DISK_RESERVE_GIB` | `2` | free-space reserve after planned work |
 | `AEF_GRITS_WEB_PLAN_TTL` | `3600` | signed plan lifetime in seconds |
 | `AEF_GRITS_WEB_PLAN_SECRET` | local persistent secret | optional explicit signing secret |
+| `AEF_GRITS_WEB_AUTH_MODE` | `local` | `local` or per-user `oauth` |
+| `AEF_GRITS_WEB_SESSION_SECRET` | local persistent secret | Flask session signing secret |
+| `AEF_GRITS_WEB_OAUTH_CLIENT` | unset | server-side OAuth client JSON path |
+| `AEF_GRITS_WEB_OAUTH_REDIRECT_URI` | unset | exact HTTPS callback URI |
+| `AEF_GRITS_AUTH_VAULT` | unset | encrypted SQLite vault on native storage |
+| `AEF_GRITS_AUTH_VAULT_KEY` | unset | external owner-only vault key |
+| `AEF_GRITS_WEB_ALLOWED_DOMAINS` | unset | optional Workspace-domain allowlist |
+| `AEF_GRITS_WEB_TRUSTED_HOSTS` | localhost | accepted Flask host names |
+| `AEF_GRITS_WEB_PROXY_COUNT` | `0` | trusted reverse-proxy hop count |
 
 When `AEF_GRITS_WEB_OUTPUT` is on Linux NTFS/NTFS3, both `AEF_GRITS_WEB_STATE`
 and `AEF_GRITS_WEB_STAGING` must point to ext4/XFS (or another native local
@@ -154,5 +196,6 @@ catalog never use NTFS; only completed products are delivered there.
 
 The output field accepts a relative subdirectory only. Absolute paths and `..`
 are rejected, so a browser request cannot write outside the configured output
-root. The Flask server is intended for one trusted local user and is not a
-public or multi-user deployment service.
+root. Local mode is intended for one trusted user. OAuth mode is intended for
+an authenticated campus deployment behind HTTPS, not an anonymous public
+download service.

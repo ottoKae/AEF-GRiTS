@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aef_grits.grids import AEF_RESOLUTION_M, ReferenceGridProvider
+from aef_grits.earth_engine import initialize
 
 
 AEF_ASSET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
@@ -33,7 +34,10 @@ def parse_args() -> argparse.Namespace:
         description="Export annual 64-band AEF rasters on a reference grid."
     )
     parser.add_argument("--reference", type=Path, required=True)
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--project")
+    parser.add_argument(
+        "--auth-source", choices=("auto", "earthengine", "adc", "web"), default=None
+    )
     parser.add_argument("--years", type=int, nargs="+", default=list(range(2017, 2026)))
     parser.add_argument("--folder", default="AEF_GRITS_RASTERS")
     parser.add_argument("--prefix", required=True)
@@ -118,7 +122,9 @@ def main() -> None:
     if args.dry_run:
         return
 
-    ee.Initialize(project=args.project)
+    _, resolved_auth = initialize(
+        args.project, auth_source=args.auth_source, return_auth=True
+    )
     xmin, ymin, xmax, ymax = grid["bounds"]
     region = ee.Geometry.Rectangle(
         [xmin, ymin, xmax, ymax], proj=grid["crs"], geodesic=False
@@ -159,7 +165,11 @@ def main() -> None:
             f"source_tiles={source_tiles}"
         )
 
-    payload = {**plan, "project": args.project, "tasks": submitted}
+    payload = {
+        **plan,
+        "authentication": resolved_auth.public_summary(),
+        "tasks": submitted,
+    }
     args.task_log.parent.mkdir(parents=True, exist_ok=True)
     args.task_log.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aef_grits.atomic import write_json, write_parquet  # noqa: E402
+from aef_grits.auth import AuthenticationError  # noqa: E402
 from aef_grits.earth_engine import (  # noqa: E402
     AEF_BANDS,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -116,7 +117,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional override; defaults to the packaged global MGRS index",
     )
     parser.add_argument("--tiles", nargs="+")
-    parser.add_argument("--project", required=True)
+    parser.add_argument(
+        "--project",
+        help="Earth Engine quota project; otherwise use private local credential configuration",
+    )
+    parser.add_argument(
+        "--auth-source",
+        choices=("auto", "earthengine", "adc", "web"),
+        default=None,
+        help="Existing credential source (default: AEF_GRITS_AUTH_SOURCE or auto)",
+    )
     parser.add_argument("--years", nargs="+", type=int, default=list(range(2017, 2026)))
     parser.add_argument("--block-size", type=int, default=256)
     parser.add_argument("--inner-chunk", type=int, default=DEFAULT_INNER_CHUNK)
@@ -999,7 +1009,7 @@ def main() -> None:
         free_bytes = shutil.disk_usage(root).free
         plan = {
             "scheme": args.grid_scheme,
-            "project": args.project,
+            "project_configured": bool(args.project or os.environ.get("AEF_GRITS_PROJECT")),
             "years": years,
             "grid_count": len(grids),
             "grids": [
@@ -1034,11 +1044,18 @@ def main() -> None:
         }
         print(json.dumps(plan, indent=2))
         return
-    ee = initialize(
-        args.project,
-        high_volume=args.high_volume,
-        request_timeout_seconds=args.request_timeout_seconds,
-    )
+    try:
+        ee, resolved_auth = initialize(
+            args.project,
+            auth_source=args.auth_source,
+            high_volume=args.high_volume,
+            request_timeout_seconds=args.request_timeout_seconds,
+            return_auth=True,
+        )
+    except AuthenticationError as exc:
+        emit_event("auth_required", error_type=type(exc).__name__, error=str(exc))
+        raise
+    emit_event("auth_ready", **resolved_auth.public_summary())
     reports = []
     failures = []
     resumable_failure = None

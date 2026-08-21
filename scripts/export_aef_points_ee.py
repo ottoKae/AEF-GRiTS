@@ -16,6 +16,8 @@ from pathlib import Path
 import ee
 import pandas as pd
 
+from aef_grits.earth_engine import initialize
+
 
 DATASET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 AEF_BANDS = [f"A{i:02d}" for i in range(64)]
@@ -24,7 +26,10 @@ AEF_BANDS = [f"A{i:02d}" for i in range(64)]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sample-csv", type=Path, required=True)
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--project")
+    parser.add_argument(
+        "--auth-source", choices=("auto", "earthengine", "adc", "web"), default=None
+    )
     parser.add_argument("--folder", default="AEF_ALL_PLANTATION_POLYGONS")
     parser.add_argument("--prefix", default="plantation_polygon_pixels_2017_2025")
     parser.add_argument("--years", nargs="+", type=int, default=list(range(2017, 2026)))
@@ -86,7 +91,7 @@ def main() -> None:
         "chunk_count_total": chunks,
         "chunk_count_selected": len(selected),
         "selected_chunks": selected,
-        "project": args.project,
+        "project_configured": bool(args.project),
         "drive_folder": args.folder,
         "prefix": args.prefix,
         "study_bounds": args.study_bounds,
@@ -95,7 +100,10 @@ def main() -> None:
     if args.dry_run:
         return
 
-    ee.Initialize(project=args.project)
+    _, resolved_auth = initialize(
+        args.project, auth_source=args.auth_source, return_auth=True
+    )
+    plan["authentication"] = resolved_auth.public_summary()
     bounds = ee.Geometry.Rectangle(args.study_bounds, None, False)
     image = ee.Image.cat([annual_image(year, bounds) for year in years])
     selectors = [

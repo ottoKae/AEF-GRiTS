@@ -2,105 +2,77 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**Platforms:** Windows · macOS (Intel and Apple Silicon) · Linux<br>
-**Interfaces:** local Web application · Python command line
+AEF-GRiTS downloads annual 64-dimensional AlphaEarth Foundation embeddings
+directly from Google Earth Engine to local storage. It supports sparse point
+samples and dense 10 m grids without staging products in Google Drive.
 
-AEF-GRiTS downloads annual 64-dimensional AlphaEarth Foundation (AEF)
-embeddings directly from Google Earth Engine to local storage. It supports
-sparse training samples and dense 10 m mapping grids without staging files in
-Google Drive.
+**Platforms:** Windows, macOS (Intel/Apple Silicon), Linux
 
-Data source: `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`, bands `A00`–`A63`.
+**Interfaces:** command line, local Web application, shared OAuth Web deployment
 
-## What it provides
+Dataset: `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`, bands `A00`–`A63`, years
+2017–2025.
 
-- Point sampling from CSV, Shapefile, GeoPackage, GeoJSON, or Parquet.
-- Dense 10 m Zarr cubes on Tessera 0.1°, MGRS, or a reference raster grid.
-- A local Web interface for selecting inputs, years, AOIs, and output folders.
-- Resumable downloads, atomic metadata, disk/size checks, and output validation.
-- Readers for points, windows, bounding boxes, and model-ready patches.
-- A packaged global MGRS index; no other source repository is required.
+## Features
 
-## Output structure
+- CSV, Parquet, Shapefile, GeoPackage, and GeoJSON point inputs.
+- Tessera 0.1°, MGRS, and reference-raster dense grids.
+- 10 m float32 Zarr v3 with lossless Zstd-7/no-shuffle compression.
+- Bounded memory/concurrency, request deadlines, classified retry, checkpoints,
+  atomic metadata, storage guards, and product validation.
+- Point/patch/window readers for model training and inference.
+- Packaged authoritative MGRS geometry; no other repository is required.
+- Existing-credential discovery and optional per-user Web OAuth.
 
-| Workflow | Main output | Supporting files |
-|---|---|---|
-| Points | Parquet shards | `catalog.parquet`, validation/report JSON |
-| Dense grid | one Zarr per grid ID | `catalog.parquet`, progress/report JSON |
-| Web task | the same products | task log, events, validation and provenance |
-
-Downloaded data, credentials, logs, task state, and local outputs are excluded
-from Git.
-
-## Quick start
-
-Install Miniforge or Conda, clone the repository, and run:
+## Install
 
 ```bash
 conda env create -f environment-download.yml
 conda activate aef_grits_download
-earthengine authenticate --auth_mode=localhost
-earthengine set_project YOUR_GEE_PROJECT
-aef-grits-doctor --project YOUR_GEE_PROJECT --output ./outputs
 ```
 
-The same environment file works on Windows, macOS, and Linux. On Windows, run
-the commands in Anaconda Prompt or PowerShell. For remote Linux and macOS
-details, see [Linux and macOS setup](docs/linux-macos-download.md).
-
-## Web application
-
-Start the local server from the repository root:
+Or install into an existing Python 3.10+ environment:
 
 ```bash
-conda activate aef_grits_download
-python webapp/app.py
+python -m pip install -e ".[download,web]"
 ```
 
-Open `http://127.0.0.1:5555`, then:
+## Authenticate explicitly
 
-1. Choose **Points** or **Grid**.
-2. Select a point file, or choose MGRS/Tessera and define an AOI by Shapefile
-   or vector drawing.
-3. Select years and a server-side output folder, then press **Download**.
-
-The server performs preflight checks and asks for confirmation before starting.
-Tasks remain visible in the horizontal task dock with progress, current-grid
-ETA, output path, validation status, logs, and reproducibility metadata.
-
-The default output root is `webapp/output`. To use another location:
+Downloads never open a browser or start authentication. Log in once through
+the dedicated command, then verify the selected account and Project:
 
 ```bash
-# Linux/macOS
-export AEF_GRITS_WEB_OUTPUT=/data/aef
-python webapp/app.py
+aef-grits-auth login \
+  --source earthengine \
+  --auth-mode localhost \
+  --project YOUR_GEE_PROJECT
 
-# Windows PowerShell
-$env:AEF_GRITS_WEB_OUTPUT = "D:\data\aef"
-python webapp/app.py
+aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT
+aef-grits-doctor --auth-source auto --project YOUR_GEE_PROJECT --output ./outputs
 ```
 
-The Web app listens only on localhost and is intended for one trusted local
-user. Full details are in [webapp/README.md](webapp/README.md).
+`auto` reuses an explicit ADC configuration, otherwise the current user's
+Earth Engine credential, otherwise local/cloud ADC. An invalid explicit source
+fails closed and never switches identity. The Project can be supplied by
+`--project` or private local credential configuration; no real Project is
+embedded in this repository.
+
+See [Authentication and identity boundaries](docs/authentication.md) for
+personal computers, SSH servers, campus Web deployments, service accounts,
+Google Cloud, and CI.
 
 ## Point download
 
-CSV input must contain unique `sample_id`, `lon`, and `lat` columns in WGS84.
-Vector inputs must declare a CRS; coordinates are converted to WGS84 before
-Earth Engine sampling.
-
-Validate without contacting Earth Engine:
+CSV requires unique `sample_id`, `lon`, and `lat` columns in WGS84. Vector
+inputs must declare a CRS and are transformed to WGS84 before Earth Engine
+sampling.
 
 ```bash
-aef-grits-points \
-  --samples samples.csv \
-  --years 2024 2025 \
-  --validate-only
-```
+# Offline input validation
+aef-grits-points --samples samples.csv --years 2024 2025 --validate-only
 
-Download annual embeddings to atomic Parquet shards:
-
-```bash
+# Download with credentials already configured
 aef-grits-points \
   --samples samples.csv \
   --project YOUR_GEE_PROJECT \
@@ -108,116 +80,85 @@ aef-grits-points \
   --out-dir outputs/points
 ```
 
-Large CSV, Parquet and vector inputs are preflighted and downloaded in bounded
-chunks. The source is content-signed, and duplicate IDs are checked exactly
-with a native-filesystem SQLite audit rather than a full in-memory table.
-
-Read large point results without concatenating every shard:
-
-```python
-from aef_grits import open_aef_point_dataset
-
-points = open_aef_point_dataset("outputs/points", years=[2025])
-for batch in points.iter_batches(columns=["sample_id"], years=[2025]):
-    consume(batch)
-```
-
-For Shapefiles, GeoPackages, GeoJSON, and polygon-to-point conversion, use the
-same command and select `--geometry-mode`. Run `aef-grits-points --help` for all
-options.
+Results are atomic Parquet shards with `catalog.parquet` and validation/report
+JSON. Large sources are preflighted and downloaded in bounded batches.
 
 ## Dense grid download
 
-All dense products use 10 m local UTM grids and the lossless storage contract:
-
-- Zarr v3, float32
-- chunks `(1,64,64,64)`
-- shards `(1,64,512,512)`
-- Zstd level 7, no shuffle
-
-Plan a Tessera 0.1° tile without downloading:
-
 ```bash
+# Plan only; no Earth Engine call
+aef-grits-grid \
+  --grid-scheme mgrs \
+  --tiles 17MPU \
+  --years 2025 \
+  --out-dir outputs/mgrs \
+  --plan-only
+
+# Remove --plan-only and provide/configure a Project to download
 aef-grits-grid \
   --grid-scheme tessera_0p1 \
   --tessera-tile -79.95 -1.05 \
   --project YOUR_GEE_PROJECT \
   --years 2025 \
-  --out-dir outputs/tessera \
-  --plan-only
+  --out-dir outputs/tessera
 ```
 
-Remove `--plan-only` to download. For MGRS:
+Each grid ID becomes one Zarr store with shape
+`[year, 64, y, x]`, chunks `(1,64,64,64)`, shards `(1,64,512,512)`, float32,
+Zstd level 7, and no shuffle.
+
+For Linux NTFS/NTFS3 destinations, active state and staging must remain on
+ext4/XFS; NTFS receives only completed products:
 
 ```bash
 aef-grits-grid \
-  --grid-scheme mgrs \
-  --tiles 17MPU \
+  --grid-scheme mgrs --tiles 50RMU --years 2019 \
   --project YOUR_GEE_PROJECT \
-  --years 2025 \
-  --out-dir outputs/mgrs \
-  --plan-only
+  --out-dir /mnt/hdda/user/aef \
+  --state-dir /home/user/aef_state \
+  --staging-dir /home/user/aef_staging
 ```
 
-An arbitrary 10 m GeoTIFF can define a `reference` grid. Run
-`aef-grits-grid --help` for all grid modes and tuning options.
-
-### Linux NTFS delivery targets
-
-Do not run a Zarr download directly on a Linux `ntfs3` mount. Use native ext4
-or XFS directories for active state and one-grid staging, and use NTFS only as
-the completed-product destination:
-
-```bash
-aef-grits-grid \
-  --grid-scheme mgrs --tiles 50RMU \
-  --project YOUR_GEE_PROJECT --years 2019 \
-  --out-dir /mnt/hdda/user/anhui_mgrs_2019 \
-  --state-dir /home/user/aef_state/anhui_mgrs_2019 \
-  --staging-dir /home/user/aef_staging/anhui_mgrs_2019
-```
-
-On Linux, the command detects the output filesystem before touching it. An
-NTFS/NTFS3 final path is rejected unless both control state and staging are on
-a non-NTFS mount. Downloads write one block at a time to staging; an isolated
-single-writer process then delivers one completed store to NTFS. A copy timeout
-records an incident on the state volume and performs no automatic deletion.
-See [NTFS-safe operation and recovery](docs/ntfs-safe-download.md) or the
-[Chinese guide](docs/ntfs-safe-download.zh-CN.md).
-
-### Memory-bounded concurrency
-
-Grid and point commands accept `--workers auto` and detect the smaller of host
-available memory, Linux cgroup headroom, and an optional
-`--memory-limit-gib`. Requests use a bounded in-flight queue; the point workflow
-does not materialize every chunk future. Multiple CLI/Web jobs share a
-cross-process Earth Engine request-token pool, while completed products share
-one exclusive final-delivery lock.
-
-For independently launched jobs, configure one native shared resource root:
-
-```bash
-export AEF_GRITS_RESOURCE_STATE=/home/user/aef_state/.resource_locks
-```
-
-Plans and reports record the resolved workers, estimated peak memory, actual
-peak RSS, and throttle count. See
+See [NTFS-safe operation](docs/ntfs-safe-download.md) and
 [resource-bounded downloads](docs/resource-bounded-download.md).
 
-Every Earth Engine attempt has an explicit deadline (default 300 seconds),
-classified retries, bounded backoff, and resumable failure events. Use
-`--request-timeout-seconds` to change it. Conservative presets are available
-through `--resource-profile workstation-auto|low-memory-1g|server-8g|server-16g`.
-Truncated HTTPS/TLS responses are retryable. Grid requests that still fail are
-adaptively split from the default 256-pixel window down to 64-pixel windows,
-without changing the Zarr layout or parent-block checkpoint. On Linux, reports
-also record physical-interface RX drop/error deltas and emit a warning if they
-increase; retries protect progress but do not treat NIC packet loss as healthy.
+## Web application
 
-## Resolve grid IDs from an AOI
+For one trusted local user:
 
-Convert a Shapefile, GeoPackage, GeoJSON, or GeoParquet AOI into deterministic
-MGRS and Tessera grid lists:
+```bash
+python webapp/app.py
+```
+
+Open `http://127.0.0.1:5555`, enter your Earth Engine Project, choose Points or
+Grid, select years/output, and start the two-stage preflight/confirmation flow.
+The Web runner uses the same tested CLI downloaders.
+
+For a campus/shared server, enable per-user OAuth. Do not configure a global
+Project fallback; every user logs in and selects a Project they can use. Tasks,
+credentials, and outputs are isolated by anonymous owner ID. Deployment steps
+are in [Authentication](docs/authentication.md) and [Web application](webapp/README.md).
+
+## Read results
+
+```python
+from aef_grits import open_aef_point_dataset
+from aef_grits.store import AEFZarr
+
+points = open_aef_point_dataset("outputs/points", years=[2025])
+for batch in points.iter_batches(years=[2025]):
+    consume(batch)
+
+cube = AEFZarr("outputs/mgrs/17MPU/aef_17MPU_2025_2025.zarr")
+vector = cube.sample_at(x, y, year=2025, crs="EPSG:32717")
+patches = cube.sample_patches([(x, y)], years=[2025], patch_size=9, crs="EPSG:32717")
+window = cube.read_window(0, 256, 0, 256, years=[2025])
+```
+
+The standard Zarr API detects compression metadata and decompresses reads
+automatically.
+
+## AOI to grid IDs
 
 ```bash
 python scripts/resolve_aef_grid_ids.py \
@@ -226,57 +167,26 @@ python scripts/resolve_aef_grid_ids.py \
   --out-dir outputs/grid_lookup
 ```
 
-The bundled `aef_grits/data/mgrs.parquet` is the authoritative MGRS geometry.
-
-## Read local Zarr data
-
-```python
-from aef_grits.store import AEFZarr
-
-cube = AEFZarr("outputs/mgrs/17MPU/aef_17MPU_2025_2025.zarr")
-vector = cube.sample_at(x, y, year=2025, crs="EPSG:32717")
-patches = cube.sample_patches(
-    [(x, y)], years=[2025], patch_size=9, crs="EPSG:32717"
-)
-window = cube.read_window(0, 256, 0, 256, years=[2025])
-```
-
-Zarr reads are decompressed automatically through the standard Zarr API.
-
-## Reliability
-
-- Point shards and metadata are committed atomically.
-- Dense grids save block checkpoints and resume compatible outputs.
-- Linux NTFS is final-delivery-only; checkpoints, catalogs, reports, PID files,
-  logs, and active Zarr writes remain on a native filesystem.
-- Existing outputs are protected by request signatures.
-- The Web app uses signed one-use plans, bounded queues, process-tree control,
-  disk limits, and automatic product validation.
-- CRS, transform, years, bands, compression, and source metadata are stored with
-  every grid product.
-
-## Repository guide
-
-```text
-aef_grits/       core grids, point conversion, readers, resources, doctor
-scripts/         point/grid downloaders and preparation utilities
-webapp/          localhost Web interface and task runner
-tests/           unit, API, storage, CRS, and browser tests
-docs/            data layout and operational documentation
-```
-
-Key documentation:
-
-- [Data layout](docs/data-layout.md)
-- [Direct Earth Engine streaming](docs/direct-streaming.md)
-- [Linux and macOS download environment](docs/linux-macos-download.md)
-- [Web application](webapp/README.md)
-
 ## Test
 
 ```bash
 python -m pytest -q
 ```
 
-Browser tests use Playwright when Chrome/Chromium is available. Large Earth
-Engine downloads are not started by the automated test suite.
+CI runs Python 3.11/3.12 on Windows, macOS, and Linux. Browser tests run with
+Playwright. Automated tests use synthetic data and do not start large Earth
+Engine downloads.
+
+## Repository layout
+
+```text
+aef_grits/       authentication, grids, readers, storage and resource controls
+scripts/         point/grid downloaders and preparation utilities
+webapp/          local/shared Web UI and reliable task runner
+tests/           unit, API, CRS, storage and browser tests
+docs/            operation, data layout and deployment guides
+```
+
+Additional references: [data layout](docs/data-layout.md),
+[direct streaming](docs/direct-streaming.md), and
+[Linux/macOS setup](docs/linux-macos-download.md).

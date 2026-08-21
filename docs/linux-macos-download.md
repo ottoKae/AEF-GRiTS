@@ -58,19 +58,23 @@ option to bypass genuinely missing dependencies.
 For a Linux desktop or macOS computer with a local browser:
 
 ```bash
-earthengine authenticate --auth_mode=localhost
-earthengine set_project YOUR_GEE_PROJECT
+aef-grits-auth login \
+  --source earthengine \
+  --auth-mode localhost \
+  --project YOUR_GEE_PROJECT
 ```
 
 For a remote/headless Linux machine, use the official gcloud flow when gcloud
 is installed, or notebook authentication when a local callback is impossible:
 
 ```bash
-earthengine authenticate --auth_mode=gcloud
+aef-grits-auth login --source earthengine --auth-mode gcloud --project YOUR_GEE_PROJECT
 # or
-earthengine authenticate --auth_mode=notebook
-earthengine set_project YOUR_GEE_PROJECT
+aef-grits-auth login --source earthengine --auth-mode notebook --project YOUR_GEE_PROJECT
 ```
+
+These are explicit setup commands. Download, retry, and resume commands never
+start authentication. See [authentication boundaries](authentication.md).
 
 Credentials normally persist at
 `~/.config/earthengine/credentials`. Never copy that file into this repository.

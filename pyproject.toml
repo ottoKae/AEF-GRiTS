@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aef-grits"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reproducible AlphaEarth Foundation point and raster extraction workflow"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -52,7 +52,12 @@ download = [
   "xarray>=2024.1",
   "zarr>=3.1,<4",
 ]
-web = ["flask>=3.1", "psutil>=5.9"]
+web = [
+  "cryptography>=42,<47",
+  "flask>=3.1",
+  "google-auth-oauthlib>=1.2,<2",
+  "psutil>=5.9",
+]
 web-e2e = ["playwright>=1.45"]
 dev = ["pytest>=8"]
 
@@ -62,6 +67,7 @@ aef-grits-points = "scripts.stream_aef_points_ee:main"
 aef-grits-grid = "scripts.stream_aef_grid_ee:main"
 aef-grits-storage-check = "scripts.check_aef_storage:main"
 aef-grits-benchmark-summary = "scripts.summarize_download_benchmarks:main"
+aef-grits-auth = "aef_grits.auth_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["aef_grits*", "scripts"]

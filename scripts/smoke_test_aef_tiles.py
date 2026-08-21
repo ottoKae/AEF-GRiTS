@@ -27,7 +27,10 @@ from scripts.stream_aef_grid_ee import _stream_one  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--project")
+    parser.add_argument(
+        "--auth-source", choices=("auto", "earthengine", "adc", "web"), default=None
+    )
     parser.add_argument(
         "--out-dir", type=Path, default=ROOT / "outputs" / "tile_smoke"
     )
@@ -99,7 +102,12 @@ def main() -> None:
     state_dir = args.out_dir / ".state"
     staging_dir = args.out_dir / ".staging"
     catalog_path = state_dir / "catalog.parquet"
-    ee = initialize(args.project, high_volume=args.high_volume)
+    ee, resolved_auth = initialize(
+        args.project,
+        auth_source=args.auth_source,
+        high_volume=args.high_volume,
+        return_auth=True,
+    )
     results = []
     for probe in probes:
         output = args.out_dir / probe.scheme / f"{probe.grid_id}.zarr"
@@ -133,7 +141,7 @@ def main() -> None:
             }
         )
     report = {
-        "project": args.project,
+        "authentication": resolved_auth.public_summary(),
         "year": args.year,
         "probe_size": args.probe_size,
         "passed": all(item["finite_values"] > 0 for item in results),

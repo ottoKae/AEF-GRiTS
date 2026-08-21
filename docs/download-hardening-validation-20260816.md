@@ -89,7 +89,7 @@ times faster than the first exact audit implementation.
 
 ### Authenticated Earth Engine acceptance
 
-Project: `YOUR_GEE_PROJECT`.
+Project: `<redacted-project>`.
 
 Point run:
 

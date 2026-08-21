@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aef_grits.atomic import write_json, write_parquet  # noqa: E402
+from aef_grits.auth import AuthenticationError  # noqa: E402
 from aef_grits.earth_engine import (  # noqa: E402
     AEF_RESOLUTION_M,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -90,7 +91,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--project",
-        help="Earth Engine quota project (required unless --validate-only)",
+        help="Earth Engine quota project; otherwise use private local credential configuration",
+    )
+    parser.add_argument(
+        "--auth-source",
+        choices=("auto", "earthengine", "adc", "web"),
+        default=None,
+        help="Existing credential source (default: AEF_GRITS_AUTH_SOURCE or auto)",
     )
     parser.add_argument("--years", nargs="+", type=int, default=list(range(2017, 2026)))
     parser.add_argument("--chunk-size", type=int, default=1_000)
@@ -413,8 +420,6 @@ def main() -> None:
     raise_for_invalid_points(validation)
     if args.validate_only:
         return
-    if not args.project:
-        raise ValueError("--project is required for an Earth Engine download")
     source.assert_unchanged(validation["source_fingerprint"])
 
     delivery_path = state_root / "delivery.json"
@@ -440,11 +445,23 @@ def main() -> None:
         previous = json.loads(run_path.read_text(encoding="utf-8"))
         if previous.get("signature") != signature:
             raise ValueError("Existing output signature differs; use a new directory or --overwrite")
+    try:
+        ee, resolved_auth = initialize(
+            args.project,
+            auth_source=args.auth_source,
+            high_volume=args.high_volume,
+            request_timeout_seconds=args.request_timeout_seconds,
+            return_auth=True,
+        )
+    except AuthenticationError as exc:
+        emit_event("auth_required", error_type=type(exc).__name__, error=str(exc))
+        raise
+    emit_event("auth_ready", **resolved_auth.public_summary())
     write_json(
         {
             "signature": signature,
             "dataset": DATASET,
-            "project": args.project,
+            "authentication": resolved_auth.public_summary(),
             "years": years,
             "samples": str(args.samples.resolve()),
             "sample_count": validation["rows"],
@@ -462,11 +479,6 @@ def main() -> None:
         run_path,
     )
 
-    ee = initialize(
-        args.project,
-        high_volume=args.high_volume,
-        request_timeout_seconds=args.request_timeout_seconds,
-    )
     started = time.perf_counter()
     records: list[dict] = []
     total_jobs = int(validation["estimated_shards"])

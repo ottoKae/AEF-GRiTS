@@ -25,9 +25,10 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory, session
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
+from werkzeug.middleware.proxy_fix import ProxyFix
 import psutil
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -47,12 +48,14 @@ from aef_grits.resource_budget import (
     plan_grid_resources,
     plan_point_resources,
 )
+from aef_grits.redaction import redact_text
 from aef_grits.storage_safety import (
     isolated_disk_free,
     mount_for_path,
     terminate_process_group_once,
     validate_storage_layout,
 )
+from webapp.auth import AuthBinding, WebAuth
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -100,7 +103,9 @@ RESOURCE_STATE_ROOT = Path(
     os.environ.get("AEF_GRITS_RESOURCE_STATE", str(RUNS_DIR / ".resource_locks"))
 ).expanduser().absolute()
 POINT_SUFFIXES = {".csv", ".parquet", ".shp", ".gpkg", ".geojson", ".json"}
-TERMINAL_STATUSES = {"done", "failed", "error", "cancelled", "interrupted"}
+TERMINAL_STATUSES = {
+    "done", "failed", "error", "cancelled", "interrupted", "auth_required"
+}
 PROGRESS_PATTERN = re.compile(r"\[(\d+)\s*/\s*(\d+)\]")
 GRID_ID_PATTERN = re.compile(r'"grid_id"\s*:\s*"([^"]+)"')
 EVENT_PREFIX = "AEF_EVENT "
@@ -154,12 +159,48 @@ def _plan_secret() -> str:
 
 _plan_serializer = URLSafeTimedSerializer(_plan_secret(), salt="aef-grits-web-plan-v1")
 
+
+def _session_secret() -> str:
+    configured = os.environ.get("AEF_GRITS_WEB_SESSION_SECRET")
+    if configured:
+        return configured
+    path = RUNS_DIR / ".session_secret"
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    value = secrets.token_urlsafe(48)
+    write_text(value, path)
+    return value
+
+
+_web_auth = WebAuth()
+_trusted_hosts = [
+    value.strip()
+    for value in os.environ.get(
+        "AEF_GRITS_WEB_TRUSTED_HOSTS", "localhost,127.0.0.1"
+    ).split(",")
+    if value.strip()
+]
+
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+app.secret_key = _session_secret()
 app.config.update(
     JSON_AS_ASCII=False,
     MAX_CONTENT_LENGTH=MAX_UPLOAD_BYTES,
-    TRUSTED_HOSTS=["localhost", "127.0.0.1"],
+    TRUSTED_HOSTS=_trusted_hosts,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=(_web_auth.mode == "oauth" and not _web_auth.allow_insecure),
 )
+_proxy_count = max(0, int(os.environ.get("AEF_GRITS_WEB_PROXY_COUNT", "0")))
+if _proxy_count:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=_proxy_count,
+        x_proto=_proxy_count,
+        x_host=_proxy_count,
+        x_port=_proxy_count,
+        x_prefix=_proxy_count,
+    )
 
 _tasks: dict[str, dict[str, Any]] = {}
 _processes: dict[str, subprocess.Popen[str]] = {}
@@ -264,6 +305,23 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _owner_hash() -> str:
+    return _web_auth.current_owner_hash(session)
+
+
+def _owns(task: dict[str, Any]) -> bool:
+    stored = task.get("owner_hash")
+    if stored is None and _web_auth.mode == "local":
+        return True
+    return stored == _owner_hash()
+
+
+def _owner_output_root() -> Path:
+    if _web_auth.mode == "local":
+        return OUTPUT_ROOT
+    return OUTPUT_ROOT / "users" / _owner_hash()
+
+
 def _task_manifest(run_id_value: str) -> Path:
     return RUNS_DIR / run_id_value / "task.json"
 
@@ -305,6 +363,15 @@ def _public_task(run_id_value: str, task: dict[str, Any]) -> dict[str, Any]:
             "global_request_limit": GLOBAL_REQUEST_LIMIT,
             "profile": RESOURCE_PROFILE,
             "admission": _memory_admission.snapshot(),
+        },
+        "authentication": {
+            "source": (task.get("auth_binding") or {}).get("auth_source", "auto"),
+            "credential_version": (task.get("auth_binding") or {}).get(
+                "credential_version", ""
+            ),
+            "project_fingerprint": (task.get("auth_binding") or {}).get(
+                "project_fingerprint", ""
+            ),
         },
         "validation": (
             {
@@ -353,6 +420,8 @@ def _persist_task(run_id_value: str) -> None:
             "validation": task.get("validation"),
             "provenance": task.get("provenance"),
             "command": task.get("command"),
+            "owner_hash": task.get("owner_hash"),
+            "auth_binding": task.get("auth_binding"),
         }
     write_json(payload, _task_manifest(run_id_value))
 
@@ -444,6 +513,8 @@ def _load_tasks() -> None:
                 ),
                 "cancel_event": threading.Event(),
                 "grid_progress": {},
+                "owner_hash": payload.get("owner_hash"),
+                "auth_binding": payload.get("auth_binding") or {},
             }
             if status == "interrupted":
                 _persist_task(rid)
@@ -718,24 +789,26 @@ def _plan_grid(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _safe_output_dir(name: str, rid: str) -> Path:
+    root = _owner_output_root()
     if not name:
-        return OUTPUT_ROOT / rid
+        return root / rid
     candidate = Path(name)
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("Output must be a relative folder name under the configured output root")
-    resolved = Path(os.path.abspath(OUTPUT_ROOT / candidate))
-    if resolved == OUTPUT_ROOT or os.path.commonpath([resolved, OUTPUT_ROOT]) != str(OUTPUT_ROOT):
+    resolved = Path(os.path.abspath(root / candidate))
+    if resolved == root or os.path.commonpath([resolved, root]) != str(root):
         raise ValueError("Output folder must stay inside the configured output root")
     return resolved
 
 
 def _safe_output_browser_dir(name: str = "") -> Path:
     """Resolve a browsable directory while confining it to OUTPUT_ROOT."""
+    root = _owner_output_root()
     candidate = Path(name or ".")
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("Output browser path must be relative to the configured output root")
-    resolved = Path(os.path.abspath(OUTPUT_ROOT / candidate))
-    if os.path.commonpath([resolved, OUTPUT_ROOT]) != str(OUTPUT_ROOT):
+    resolved = Path(os.path.abspath(root / candidate))
+    if os.path.commonpath([resolved, root]) != str(root):
         raise ValueError("Output browser path must stay inside the configured output root")
     return resolved
 
@@ -859,17 +932,28 @@ def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _write_plan(params: dict[str, Any], plan: dict[str, Any], plan_dir: Path | None = None) -> dict[str, Any]:
+def _write_plan(
+    params: dict[str, Any],
+    plan: dict[str, Any],
+    plan_dir: Path | None = None,
+    *,
+    auth_binding: AuthBinding | None = None,
+) -> dict[str, Any]:
     plan_dir = plan_dir or (PLANS_DIR / uuid.uuid4().hex)
     plan_dir.mkdir(parents=True, exist_ok=True)
     plan_id_value = plan_dir.name
     enriched = _capacity_plan(plan)
+    binding = auth_binding or _web_auth.current_binding(
+        session, params["project"], verify=False
+    )
     record = {
         "plan_id": plan_id_value,
         "created_at": _now(),
         "status": "ready",
         "params": params,
         "plan": enriched,
+        "owner_hash": binding.owner_hash,
+        "auth_binding": binding.as_dict(),
     }
     digest = _json_digest(record)
     record["digest"] = digest
@@ -892,6 +976,8 @@ def _read_plan(token: str, confirmation: str = "") -> tuple[Path, dict[str, Any]
     if not plan_path.exists():
         raise ValueError("Plan state is missing; run preflight again")
     record = json.loads(plan_path.read_text(encoding="utf-8"))
+    if record.get("owner_hash") != _owner_hash():
+        raise PermissionError("This plan belongs to another user")
     if record.get("status") != "ready":
         raise ValueError(f"Plan is not reusable (status={record.get('status')})")
     digest = record.pop("digest", None)
@@ -906,6 +992,18 @@ def _read_plan(token: str, confirmation: str = "") -> tuple[Path, dict[str, Any]
             f"Large task confirmation must exactly match: {capacity['confirmation_phrase']}"
         )
     record["plan"] = capacity
+    current = _web_auth.current_binding(
+        session, record["params"]["project"], verify=False
+    )
+    expected = record.get("auth_binding") or {}
+    if (
+        current.owner_hash != expected.get("owner_hash")
+        or current.credential_version != expected.get("credential_version")
+        or current.project_fingerprint != expected.get("project_fingerprint")
+    ):
+        raise ValueError(
+            "The login, credential version, or project changed after planning; run preflight again"
+        )
     return plan_dir, record
 
 
@@ -930,8 +1028,8 @@ def _build_cmd(
             str(ROOT / "scripts" / "stream_aef_grid_ee.py"),
             "--grid-scheme",
             params["grid_scheme"],
-            "--project",
-            params["project"],
+            "--auth-source",
+            params.get("auth_source", "auto"),
             "--out-dir",
             str(output_dir),
             "--years",
@@ -971,8 +1069,8 @@ def _build_cmd(
         str(ROOT / "scripts" / "stream_aef_points_ee.py"),
         "--samples",
         params["samples_path"],
-        "--project",
-        params["project"],
+        "--auth-source",
+        params.get("auth_source", "auto"),
         "--out-dir",
         str(output_dir),
         "--years",
@@ -1027,6 +1125,8 @@ def _update_progress(rid: str, line: str) -> None:
                     task["request_retries"] = int(task.get("request_retries", 0)) + 1
                 elif event.get("event") == "request_timeout":
                     task["request_timeouts"] = int(task.get("request_timeouts", 0)) + 1
+                elif event.get("event") == "auth_required":
+                    task["auth_failure"] = True
                 grid_ids = task.get("params", {}).get("grid_ids", [])
                 grid_id = event.get("grid_id")
                 if event.get("event") == "grid_start" and grid_id:
@@ -1303,6 +1403,20 @@ def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
             task["stage"] = "downloading"
             _persist_task(rid)
         child_env = dict(os.environ)
+        binding = task.get("auth_binding") or {}
+        child_env["AEF_GRITS_AUTH_SOURCE"] = str(
+            binding.get("auth_source") or task["params"].get("auth_source") or "auto"
+        )
+        project = str(task["params"].get("project") or "").strip()
+        if project:
+            child_env["AEF_GRITS_PROJECT"] = project
+        else:
+            child_env.pop("AEF_GRITS_PROJECT", None)
+        handle = str(binding.get("credential_handle") or "")
+        if handle:
+            child_env["AEF_GRITS_CREDENTIAL_HANDLE"] = handle
+        else:
+            child_env.pop("AEF_GRITS_CREDENTIAL_HANDLE", None)
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
             with log_path.open("a", encoding="utf-8") as stream:
@@ -1342,6 +1456,15 @@ def _run_subprocess(rid: str, cmd: list[str], log_path: Path) -> None:
                 elif return_code == 0:
                     task["status"] = "validating_output"
                     task["stage"] = "validating_output"
+                    _persist_task(rid)
+                elif task.get("auth_failure"):
+                    task["status"] = "auth_required"
+                    task["stage"] = "auth_required"
+                    task["error"] = (
+                        "Stored authorization or project access must be renewed; "
+                        "the download checkpoint was preserved."
+                    )
+                    task["finished_at"] = _now()
                     _persist_task(rid)
                 else:
                     task["status"] = "failed"
@@ -1559,20 +1682,46 @@ def _inspect_aoi_upload() -> dict[str, Any]:
 
 @app.before_request
 def reject_cross_origin_mutations():
-    """Prevent external web pages from submitting work to the localhost runner."""
+    """Prevent external pages from mutating either local or shared runners."""
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
         return None
     origin = request.headers.get("Origin")
     if not origin:
         return None
     parsed = urlsplit(origin)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"localhost", "127.0.0.1"}
-        or parsed.netloc != request.host
-    ):
+    if parsed.netloc != request.host or parsed.scheme != request.scheme:
         return jsonify({"error": "Cross-origin task mutations are not allowed"}), 403
     return None
+
+
+@app.before_request
+def require_web_identity():
+    if _web_auth.mode != "oauth" or not request.path.startswith("/api/"):
+        return None
+    public = {
+        "/api/auth/status",
+        "/api/auth/login",
+        "/api/auth/callback",
+    }
+    if request.path in public:
+        return None
+    if not _web_auth.status(session).get("authenticated"):
+        return jsonify({"error": "Google/Earth Engine login is required"}), 401
+    return None
+
+
+@app.after_request
+def secure_response_headers(response: Response) -> Response:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if request.path.startswith("/api/auth/"):
+        response.headers["Cache-Control"] = "no-store"
+    if _web_auth.mode == "oauth" and not _web_auth.allow_insecure:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -1588,13 +1737,45 @@ def http_error(exc):
 @app.errorhandler(Exception)
 def unexpected_error(exc):  # pragma: no cover - Flask defensive boundary
     error_id = uuid.uuid4().hex[:12]
-    print(f"Unexpected web error {error_id}: {exc}", file=sys.stderr, flush=True)
+    print(
+        f"Unexpected web error {error_id}: {redact_text(exc)}",
+        file=sys.stderr,
+        flush=True,
+    )
     return jsonify({"error": "Internal server error", "error_id": error_id}), 500
 
 
 @app.get("/")
 def index() -> Response:
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/api/auth/status")
+def auth_status() -> Response:
+    return jsonify(_web_auth.status(session))
+
+
+@app.get("/api/auth/login")
+def auth_login() -> Response:
+    try:
+        return redirect(_web_auth.authorization_url(session))
+    except (OSError, RuntimeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/auth/callback")
+def auth_callback() -> Response:
+    try:
+        _web_auth.complete_callback(session, request.url)
+        return redirect("/")
+    except (OSError, RuntimeError, ValueError, PermissionError) as exc:
+        return jsonify({"error": str(exc)}), 403
+
+
+@app.post("/api/auth/logout")
+def auth_logout() -> Response:
+    _web_auth.logout(session)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/capabilities")
@@ -1615,7 +1796,8 @@ def capabilities() -> Response:
             "max_raw_gib": MAX_RAW_BYTES / 1024**3,
             "warn_raw_gib": WARN_RAW_BYTES / 1024**3,
             "plan_ttl_seconds": PLAN_TTL_SECONDS,
-            "output_root": str(OUTPUT_ROOT),
+            "output_root": str(_owner_output_root()),
+            "authentication_mode": _web_auth.mode,
             "python": PYTHON_BIN,
         }
     )
@@ -1628,7 +1810,7 @@ def output_directories() -> Response:
         if STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs:
             return jsonify(
                 {
-                    "output_root": str(OUTPUT_ROOT),
+                    "output_root": str(_owner_output_root()),
                     "path": "",
                     "parent": None,
                     "directories": [],
@@ -1640,30 +1822,32 @@ def output_directories() -> Response:
                     ),
                 }
             )
+        root = _owner_output_root()
+        root.mkdir(parents=True, exist_ok=True)
         current = _safe_output_browser_dir(str(request.args.get("path", "")))
         if not current.exists() or not current.is_dir():
             raise ValueError("Selected output directory does not exist")
-        relative = "" if current == OUTPUT_ROOT else current.relative_to(OUTPUT_ROOT).as_posix()
+        relative = "" if current == root else current.relative_to(root).as_posix()
         directories = []
         for child in sorted(current.iterdir(), key=lambda item: item.name.casefold()):
             if not child.is_dir():
                 continue
             resolved = child.resolve()
-            if resolved != OUTPUT_ROOT and OUTPUT_ROOT not in resolved.parents:
+            if resolved != root and root not in resolved.parents:
                 continue
             directories.append(
                 {
                     "name": child.name,
-                    "path": child.relative_to(OUTPUT_ROOT).as_posix(),
+                    "path": child.relative_to(root).as_posix(),
                 }
             )
         parent = None
-        if current != OUTPUT_ROOT:
+        if current != root:
             parent_path = current.parent
-            parent = "" if parent_path == OUTPUT_ROOT else parent_path.relative_to(OUTPUT_ROOT).as_posix()
+            parent = "" if parent_path == root else parent_path.relative_to(root).as_posix()
         return jsonify(
             {
-                "output_root": str(OUTPUT_ROOT),
+                "output_root": str(root),
                 "path": relative,
                 "parent": parent,
                 "directories": directories,
@@ -1695,11 +1879,12 @@ def create_output_directory() -> Response:
         target = _safe_output_browser_dir(
             (Path(str(body.get("parent", ""))) / name).as_posix()
         )
-        target.mkdir(exist_ok=False)
+        target.mkdir(parents=True, exist_ok=False)
+        root = _owner_output_root()
         return jsonify(
             {
                 "name": target.name,
-                "path": target.relative_to(OUTPUT_ROOT).as_posix(),
+                "path": target.relative_to(root).as_posix(),
             }
         ), 201
     except FileExistsError:
@@ -1714,7 +1899,12 @@ def plan_task() -> Response:
         params = _normalize_params(request.get_json(silent=True) or {})
         if params["workflow"] != "grid":
             raise ValueError("Use /api/plan/points for point sources")
-        return jsonify(_write_plan(params, _plan_grid(params)))
+        binding = _web_auth.bind_project(session, params["project"])
+        return jsonify(
+            _write_plan(params, _plan_grid(params), auth_binding=binding)
+        )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -1739,6 +1929,7 @@ def plan_points() -> Response:
             raise ValueError("Point preflight requires workflow=point")
         if request.mimetype != "multipart/form-data":
             raise ValueError("Point preflight must use a multipart sample upload")
+        binding = _web_auth.bind_project(session, params["project"])
         plan_dir = PLANS_DIR / uuid.uuid4().hex
         plan_dir.mkdir(parents=True)
         primary = _save_point_uploads(plan_dir)
@@ -1785,7 +1976,13 @@ def plan_points() -> Response:
             "resource_plan": resources.as_dict(),
             "memory": WEB_MEMORY_SNAPSHOT.as_dict(),
         }
-        return jsonify(_write_plan(params, point_plan, plan_dir))
+        return jsonify(
+            _write_plan(params, point_plan, plan_dir, auth_binding=binding)
+        )
+    except PermissionError as exc:
+        if plan_dir is not None and plan_dir.exists():
+            shutil.rmtree(plan_dir)
+        return jsonify({"error": str(exc)}), 403
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         if plan_dir is not None and plan_dir.exists():
             shutil.rmtree(plan_dir)
@@ -1800,7 +1997,7 @@ def list_tasks() -> Response:
             for rid, task in sorted(
                 _tasks.items(), key=lambda item: item[1].get("started_at", ""), reverse=True
             )
-            if not task.get("hidden")
+            if not task.get("hidden") and _owns(task)
         ]
     return jsonify(items)
 
@@ -1829,6 +2026,8 @@ def create_task() -> Response:
             _consume_plan(plan_dir, record, rid)
         params = record["params"]
         plan = record["plan"]
+        auth_binding = record["auth_binding"]
+        params["auth_source"] = auth_binding["auth_source"]
         output_dir = _safe_output_dir(params["output_name"], rid)
         with _task_lock:
             collision = any(
@@ -1868,6 +2067,8 @@ def create_task() -> Response:
             "grid_progress": {},
             "plan_id": plan_dir.name,
             "provenance": _provenance(),
+            "owner_hash": record["owner_hash"],
+            "auth_binding": auth_binding,
         }
         with _task_lock:
             _tasks[rid] = task
@@ -1884,6 +2085,10 @@ def create_task() -> Response:
         _executor.submit(_run_subprocess, rid, cmd, log_path)
         submitted = True
         return jsonify({"run_id": rid, "status": "queued", "plan": plan}), 202
+    except PermissionError as exc:
+        if run_dir is not None and run_dir.exists() and run_dir.parent == RUNS_DIR:
+            shutil.rmtree(run_dir)
+        return jsonify({"error": str(exc)}), 403
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         if run_dir is not None and run_dir.exists() and run_dir.parent == RUNS_DIR:
             shutil.rmtree(run_dir)
@@ -1897,7 +2102,7 @@ def create_task() -> Response:
 def get_task(rid: str) -> Response:
     with _task_lock:
         task = _tasks.get(rid)
-        if task is None or task.get("hidden"):
+        if task is None or task.get("hidden") or not _owns(task):
             return jsonify({"error": "Task not found"}), 404
         payload = {
             **_public_task(rid, task),
@@ -1914,7 +2119,7 @@ def get_task(rid: str) -> Response:
 def task_results(rid: str) -> Response:
     with _task_lock:
         task = _tasks.get(rid)
-        if task is None or task.get("hidden"):
+        if task is None or task.get("hidden") or not _owns(task):
             return jsonify({"error": "Task not found"}), 404
         if not task.get("validation"):
             return jsonify({"error": "Validated results are not available yet"}), 409
@@ -1928,11 +2133,61 @@ def task_results(rid: str) -> Response:
     return jsonify(payload)
 
 
+@app.post("/api/tasks/<rid>/resume")
+def resume_task(rid: str) -> Response:
+    """Resume a checkpointed task after explicit reauthentication/project verification."""
+    slot_acquired = False
+    submitted = False
+    try:
+        if not _submission_slots.acquire(blocking=False):
+            return jsonify({"error": "Task queue is full"}), 429
+        slot_acquired = True
+        body = request.get_json(silent=True) or {}
+        with _task_lock:
+            task = _tasks.get(rid)
+            if task is None or task.get("hidden") or not _owns(task):
+                return jsonify({"error": "Task not found"}), 404
+            if task.get("status") not in {"auth_required", "interrupted", "failed", "error"}:
+                return jsonify({"error": "Only stopped checkpointed tasks can be resumed"}), 409
+            project = str(body.get("project") or task["params"].get("project") or "").strip()
+        binding = _web_auth.bind_project(session, project)
+        with _task_lock:
+            task = _tasks[rid]
+            task["params"]["project"] = project
+            task["params"]["auth_source"] = binding.auth_source
+            task["auth_binding"] = binding.as_dict()
+            task["status"] = "queued"
+            task["stage"] = "waiting_resources"
+            task["error"] = None
+            task["auth_failure"] = False
+            task["finished_at"] = ""
+            task["cancel_event"] = threading.Event()
+            task["command"] = _build_cmd(
+                task["params"],
+                Path(task["output_dir"]),
+                state_dir=Path(task["download_state_dir"]),
+                staging_dir=Path(task["staging_dir"]) if task.get("staging_dir") else None,
+            )
+            _persist_task(rid)
+            cmd = list(task["command"])
+            log_path = Path(task["log_path"])
+        _executor.submit(_run_subprocess, rid, cmd, log_path)
+        submitted = True
+        return jsonify({"run_id": rid, "status": "queued"}), 202
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        if slot_acquired and not submitted:
+            _submission_slots.release()
+
+
 @app.get("/api/tasks/<rid>/logfile")
 def log_file(rid: str) -> Response:
     with _task_lock:
         task = _tasks.get(rid)
-        if task is None or task.get("hidden"):
+        if task is None or task.get("hidden") or not _owns(task):
             return jsonify({"error": "Task not found"}), 404
         path = Path(task["log_path"])
     if not path.exists():
@@ -1943,7 +2198,11 @@ def log_file(rid: str) -> Response:
 @app.get("/api/tasks/<rid>/log")
 def stream_log(rid: str) -> Response:
     with _task_lock:
-        if rid not in _tasks or _tasks[rid].get("hidden"):
+        if (
+            rid not in _tasks
+            or _tasks[rid].get("hidden")
+            or not _owns(_tasks[rid])
+        ):
             return jsonify({"error": "Task not found"}), 404
     try:
         offset = max(0, int(request.args.get("offset", "0")))
@@ -1989,7 +2248,7 @@ def stream_log(rid: str) -> Response:
 def cancel_or_hide_task(rid: str) -> Response:
     with _task_lock:
         task = _tasks.get(rid)
-        if task is None:
+        if task is None or not _owns(task):
             return jsonify({"error": "Task not found"}), 404
         if task["status"] in {"queued", "running", "cancelling", "validating_output"}:
             task["cancel_event"].set()

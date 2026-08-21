@@ -11,6 +11,8 @@ import ssl
 import time
 from typing import Any, Callable
 
+from .redaction import redact_text
+
 
 DATASET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 AEF_BANDS = tuple(f"A{index:02d}" for index in range(64))
@@ -203,7 +205,7 @@ def execute_with_retry(
                 "classification": classification,
                 "elapsed_seconds": elapsed,
                 "error_type": type(exc).__name__,
-                "error": str(exc)[:500],
+                "error": redact_text(exc)[:500],
             }
             if can_retry:
                 base = min(
@@ -221,7 +223,7 @@ def execute_with_retry(
                 event(event_name, payload)
             raise EarthEngineRequestError(
                 f"Earth Engine {operation} failed after {attempt} attempt(s) "
-                f"[{classification}]: {exc}",
+                f"[{classification}]: {redact_text(exc)}",
                 operation=operation,
                 classification=classification,
                 attempts=attempt,
@@ -231,25 +233,35 @@ def execute_with_retry(
 
 
 def initialize(
-    project: str,
+    project: str | None = None,
     *,
+    auth_source: str | None = None,
+    credential_handle: str | None = None,
     high_volume: bool = False,
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    return_auth: bool = False,
 ):
-    """Initialize Earth Engine and return its imported module."""
-    import ee
+    """Initialize Earth Engine from existing credentials, never interactively.
 
-    kwargs = {"project": project}
-    if high_volume:
-        kwargs["opt_url"] = HIGH_VOLUME_URL
-    ee.Initialize(**kwargs)
+    ``auto`` preserves the Earth Engine client's persistent-user behavior while
+    making explicit ADC and Web credential selection fail closed.  Login is a
+    separate command and is never attempted here.
+    """
+    from .auth import initialize_earth_engine
+
+    ee, resolved = initialize_earth_engine(
+        source=auth_source,
+        project=project,
+        credential_handle=credential_handle,
+        opt_url=HIGH_VOLUME_URL if high_volume else None,
+    )
     if request_timeout_seconds <= 0:
         raise ValueError("request_timeout_seconds must be positive")
     ee.data.setDeadline(float(request_timeout_seconds) * 1000.0)
     # AEF-GRiTS owns retry classification, events and backoff. Disable the
     # client's hidden retry loop so retry counts and deadlines are auditable.
     ee.data.setMaxRetries(0)
-    return ee
+    return (ee, resolved) if return_auth else ee
 
 
 def annual_image(year: int, bounds=None, *, renamed: bool = False):

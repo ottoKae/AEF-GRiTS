@@ -119,11 +119,11 @@ def test_initialize_sets_explicit_deadline_and_disables_hidden_retries(monkeypat
         setDeadline=lambda value: calls.append(("deadline", value)),
         setMaxRetries=lambda value: calls.append(("retries", value)),
     )
-    fake_ee = SimpleNamespace(
-        Initialize=lambda **kwargs: calls.append(("initialize", kwargs)),
-        data=fake_data,
+    fake_ee = SimpleNamespace(data=fake_data)
+    resolved = SimpleNamespace(public_summary=lambda: {})
+    monkeypatch.setattr(
+        "aef_grits.auth.initialize_earth_engine",
+        lambda **kwargs: (fake_ee, resolved),
     )
-    monkeypatch.setitem(__import__("sys").modules, "ee", fake_ee)
     assert initialize("project", high_volume=True, request_timeout_seconds=12) is fake_ee
-    assert calls[0][0] == "initialize"
-    assert calls[1:] == [("deadline", 12000.0), ("retries", 0)]
+    assert calls == [("deadline", 12000.0), ("retries", 0)]

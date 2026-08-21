@@ -42,6 +42,8 @@ def browser_app(tmp_path, monkeypatch):
         page = context.new_page()
         page.route("https://**", lambda route: route.abort())
         page.goto(f"http://127.0.0.1:{server.server_port}", wait_until="domcontentloaded")
+        page.fill("#project", "gee-test")
+        page.dispatch_event("#project", "input")
         yield page, tmp_path
         context.close()
         browser.close()

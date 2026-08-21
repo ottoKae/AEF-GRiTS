@@ -1,6 +1,6 @@
 # Web application acceptance results — 2026-08-13
 
-Project: `YOUR_GEE_PROJECT`<br>
+Project: `<redacted-project>`<br>
 Year: `2025`<br>
 Server: `http://127.0.0.1:5555`
 

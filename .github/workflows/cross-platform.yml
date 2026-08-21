@@ -31,13 +31,14 @@ jobs:
           aef-grits-grid --help
           aef-grits-storage-check --help
           aef-grits-benchmark-summary --help
+          aef-grits-auth --help
+          aef-grits-auth status --json
       - name: Run a low-memory MGRS plan without Earth Engine access
         shell: bash
         run: |
           aef-grits-grid \
             --grid-scheme mgrs \
             --tiles 50RMU \
-            --project ci-placeholder \
             --years 2025 \
             --out-dir "${RUNNER_TEMP}/aef-plan" \
             --state-dir "${RUNNER_TEMP}/aef-state" \

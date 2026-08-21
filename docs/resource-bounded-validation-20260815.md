@@ -31,7 +31,7 @@ in-flight result. Estimated peak was 0.406 GiB; no download was started.
 
 ## Authenticated Earth Engine acceptance
 
-Quota project: `YOUR_GEE_PROJECT`.
+Quota project: `<redacted-project>`.
 
 Point path:
 

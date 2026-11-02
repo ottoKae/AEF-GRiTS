@@ -3,23 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="在本机配置 AEF 点位与格网下载，选择年份和存储位置，预检后直接写入本地磁盘。">
 <title>AEF-GRiTS 嵌入式特征数据下载工具</title>
+<script>if (location.pathname === '/portal') document.documentElement.classList.add('portal-mode');</script>
 <link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/base.css">
 <style>
-/* ── Variables ── */
-:root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --surface2: #21253a;
-  --border: #2d3348;
-  --accent: #4d8ef7;
-  --accent2: #9b59ff;
-  --text: #e8eaf0;
-  --text-sec: #7a8099;
-  --font: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
-}
+/* Hallmark · theme: Dose (by request) · genre: modern-minimal · shape: app screen · dose: white · posture: committed · redesign: full · v2.0.0 */
+/* Hallmark · header refinement: one paper toolbar; brand, selected product and quiet utilities share a baseline instead of four competing cards. */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; }
+html, body { height: 100%; overflow-x: clip; overflow-y: clip; }
+:where(button, a, summary, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+:where(input, select, textarea):focus-visible, .wf-tab:focus-visible, .year-tag:focus-visible { outline-offset: -3px; }
+:where(button, summary):active:not(:disabled) { filter: brightness(.9); }
+:where(button, input, select, textarea):disabled, [aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.ui-icon { display:inline-block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;vertical-align:middle; }
+.file-picker-icon .ui-icon { width:24px;height:24px; }
 
 /* ── Layout ── */
 #app {
@@ -27,47 +30,70 @@ html, body { height: 100%; overflow: hidden; }
   flex-direction: column;
   height: 100vh;
   font-family: var(--font);
+  font-size: var(--text-md);
+  line-height: 1.5;
   background: var(--bg);
   color: var(--text);
 }
 #header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 312px minmax(220px,1fr) minmax(120px,220px) auto;
   align-items: center;
-  gap: 12px;
-  padding: 0 20px;
-  height: 52px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-lg);
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--bg);
+  border-bottom:1px solid var(--border);
   flex-shrink: 0;
-  z-index: 100;
+  position: relative;
+  z-index: var(--z-sticky-nav);
 }
+.header-brand { display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:var(--space-2xs);min-width:0; }
 #header h1 {
-  font-size: 16px;
-  font-weight: 600;
-  background: linear-gradient(90deg, var(--accent), var(--accent2));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  min-width: 0;
+  overflow-wrap: break-word;
+  font-size: var(--text-brand);
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--accent-text);
 }
 .header-tag {
-  font-size: 13px;
-  padding: 4px 9px;
-  border-radius: 4px;
-  background: rgba(77,142,247,.18);
-  color: var(--accent);
-  border: 1px solid rgba(77,142,247,.3);
+  display: block;
+  font-size: var(--text-md);
+  color: var(--text-sec);
 }
-#header .spacer { flex: 1; }
-#header a { font-size: 12px; color: var(--text-sec); text-decoration: none; }
-#header a:hover { color: var(--accent); }
+#header-product { min-width:0;display:flex;align-items:center;gap:var(--space-sm);position:relative; }
+#header-product strong { font-size:var(--text-panel-title);font-weight:700; }
+.header-product-meta { font-size:var(--text-md);color:var(--text-sec);white-space:nowrap; }
+.header-session { min-width:0;font-size:var(--text-md);line-height:1.4;text-align:right; }
+.header-session-label { font-size:var(--text-md); }
+#auth-state { color:var(--text-sec);overflow-wrap:anywhere; }
+.header-actions { display:flex;align-items:center;gap:var(--space-xs);flex-wrap:wrap;border-left:1px solid var(--border);padding-left:var(--space-md); }
+.header-actions a, .header-actions button { display:inline-flex;align-items:center;min-height:44px;padding:var(--space-xs);border:1px solid transparent;border-radius:var(--radius-input);background:transparent;font:var(--text-md)/1.3 var(--font);white-space:nowrap; }
+.header-actions button { color:var(--text);cursor:pointer; }
+#header #view-switch { color:var(--text);border-color:var(--border); }
+#header #auth-login { color:var(--accent-text);border-color:var(--accent-rule); }
+#header a { font-size:var(--text-md);color:var(--text-sec);text-decoration:none; }
+#header a:hover, .header-actions button:hover { color:var(--accent-text);background:var(--surface2); }
+@media (max-width:1250px) {
+  #header { grid-template-columns:240px minmax(200px,1fr) minmax(110px,180px) auto;gap:var(--space-md); }
+  .header-product-meta { display:none; }
+}
+@media (max-width:1100px) {
+  #header { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .header-brand { grid-column:1;grid-row:1; }
+  #header-product { grid-column:2;grid-row:1; }
+  .header-session { grid-column:1;grid-row:2;text-align:left; }
+  .header-actions { grid-column:2;grid-row:2;justify-content:flex-end;border-left:0;padding-left:0; }
+}
 
-#main { display: flex; flex: 1; overflow: hidden; min-height: 0; }
-#workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#main { display:flex;flex:1;overflow:hidden;min-height:0;position:relative;isolation:isolate;z-index:var(--z-base); }
+#workspace { flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;position:relative;isolation:isolate; }
 
 /* ── Sidebar ── */
 #sidebar {
   width: 380px;
   min-width: 340px;
-  background: var(--surface);
+  background: var(--bg);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -77,130 +103,128 @@ html, body { height: 100%; overflow: hidden; }
 #sidebar-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: var(--space-md);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-md);
 }
 .section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-sec);
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--space-xs);
 }
-.field { display: flex; flex-direction: column; gap: 5px; }
+.field { display: flex; flex-direction: column; gap: var(--space-2xs); }
 .field label {
   font-size: 14px;
-  color: var(--text-sec);
+  font-weight: 500;
+  color: var(--text);
 }
 input[type="text"], input[type="number"], select {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-input);
   color: var(--text);
-  padding: 10px 11px;
-  font-size: 14px;
+  padding: var(--space-sm) var(--space-sm);
+  font-size: var(--text-md);
   width: 100%;
   transition: border-color .15s;
   font-family: inherit;
 }
-input:focus { outline: none; border-color: var(--accent); }
 input:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Output dir with browse */
-.output-row { display: flex; gap: 6px; align-items: stretch; }
+.output-row { display: flex; gap: var(--space-xs); align-items: stretch; }
 .output-row input { flex: 1; min-width: 0; }
 .btn-browse {
   flex-shrink: 0;
-  padding: 0 12px;
-  border-radius: 6px;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-input);
   border: 1px solid var(--border);
   background: var(--surface2);
   color: var(--text-sec);
-  font-size: 12px;
+  font-size: 14px;
   cursor: pointer;
-  transition: all .15s;
+  transition: background-color .15s, color .15s, border-color .15s;
   white-space: nowrap;
 }
-.btn-browse:hover { border-color: var(--accent); color: var(--accent); }
+.btn-browse:hover { border-color: var(--accent); color: var(--accent-text); }
 
 /* AOI box */
 .aoi-box {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
+  background: transparent;
+  border: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-xs);
 }
 .aoi-hint {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-sec);
   text-align: center;
-  padding: 6px 0;
+  padding: var(--space-xs) 0;
 }
-.aoi-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.aoi-btns { display: flex; gap: var(--space-xs); flex-wrap: wrap; }
 .btn-aoi {
   flex: 1;
   min-width: 90px;
-  padding: 10px 8px;
-  border-radius: 6px;
+  padding: var(--space-sm) var(--space-xs);
+  border-radius: var(--radius-input);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--text-md);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  transition: all .15s;
+  gap: var(--space-2xs);
+  transition: background-color .15s, color .15s, border-color .15s;
 }
-.btn-aoi:hover { border-color: var(--accent); color: var(--accent); }
-.btn-aoi.active { background: rgba(77,142,247,.15); border-color: var(--accent); color: var(--accent); }
+.btn-aoi:hover { border-color: var(--accent); color: var(--accent-text); }
+.btn-aoi.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+.btn-aoi[hidden] { display:none; }
+#local-auth-controls .aoi-btns { margin-top: var(--space-sm); }
+#local-auth-controls .btn-aoi { flex-basis:calc(50% - 4px); }
 
 .aoi-status {
-  font-size: 13px;
-  padding: 8px 10px;
+  font-size: 14px;
+  padding: var(--space-xs) var(--space-sm);
   border-radius: 4px;
   display: none;
 }
-.aoi-status.empty { display: block; background: rgba(122,128,153,.12); color: var(--text-sec); }
-.aoi-status.ready { display: block; background: rgba(77,142,247,.15); color: var(--accent); }
+.aoi-status.empty { display: block; background: var(--empty-surface); color: var(--text-sec); }
+.aoi-status.ready { display: block; background: var(--accent-soft); color: var(--accent-text); }
 
 .aoi-import {
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  padding: 8px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-xs);
 }
 .aoi-import-label {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-sec);
 }
 .aoi-import-btn {
-  padding: 10px;
-  border-radius: 6px;
+  padding: var(--space-sm);
+  border-radius: var(--radius-input);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--text-md);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  transition: all .15s;
+  gap: var(--space-2xs);
+  transition: background-color .15s, color .15s, border-color .15s;
 }
-.aoi-import-btn:hover { border-color: var(--accent); color: var(--accent); }
+.aoi-import-btn:hover { border-color: var(--accent); color: var(--accent-text); }
 .aoi-import-name {
-  font-size: 12px;
-  color: var(--accent);
+  font-size: 14px;
+  color: var(--accent-text);
   word-break: break-all;
 }
 
@@ -208,9 +232,9 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 .bbox-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: var(--space-xs);
 }
-.bbox-grid label { font-size: 10px; color: var(--text-sec); margin-bottom: 2px; display: block; }
+.bbox-grid label { font-size: 13px; color: var(--text-sec); margin-bottom: var(--space-3xs); display: block; }
 
 /* Year tags */
 .year-tags-scroll {
@@ -218,124 +242,164 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   overflow-y: auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  padding: 2px;
+  gap: var(--space-2xs);
+  padding: var(--space-3xs);
 }
 .year-tag {
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 4px;
+  font-family: var(--font);
+  text-align: center;
+  font-size: 14px;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-input);
   border: 1px solid var(--border);
   background: var(--surface2);
   color: var(--text-sec);
   cursor: pointer;
-  transition: all .12s;
+  transition: background-color .12s, color .12s, border-color .12s;
   user-select: none;
 }
-.year-tag:hover { border-color: var(--accent); color: var(--accent); }
-.year-tag.active { background: rgba(77,142,247,.2); border-color: var(--accent); color: var(--accent); font-weight: 500; }
-#year-all-wrap { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-#year-all-wrap label { font-size: 13px; color: var(--text); cursor: pointer; }
+.year-tag:hover { border-color: var(--accent); color: var(--accent-text); }
+.year-tag.active { background: var(--accent-selected); border-color: var(--accent); color: var(--accent-text); font-weight: 500; }
+#year-all-wrap { display: flex; align-items: center; gap: var(--space-xs); margin-top: var(--space-xs); }
+#year-all-wrap label { font-size: 14px; color: var(--text); cursor: pointer; }
 
 /* Workflow tabs */
 .workflow-tabs {
   display: flex;
   background: var(--surface2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-input);
   overflow: hidden;
 }
 .wf-tab {
   flex: 1;
-  padding: 12px 8px;
+  padding: var(--space-sm) var(--space-xs);
   border: none;
   background: none;
   color: var(--text-sec);
-  font-size: 14px;
+  font-size: var(--text-md);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  transition: all .15s;
+  gap: var(--space-2xs);
+  transition: background-color .15s, color .15s, border-color .15s;
 }
 .wf-tab + .wf-tab { border-left: 1px solid var(--border); }
 .wf-tab:hover { color: var(--text); }
-.wf-tab.active { background: rgba(77,142,247,.15); color: var(--accent); font-weight: 500; }
+.wf-tab.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
 
 /* Submit */
 #btn-submit, #simple-btn-submit {
   width: 100%;
-  padding: 13px;
-  border-radius: 8px;
+  padding: var(--space-sm);
+  border-radius: var(--radius-input);
   border: none;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
-  transition: all .15s;
+  transition: background-color .15s, color .15s, border-color .15s;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: var(--space-xs);
 }
-#btn-submit:hover:not(:disabled), #simple-btn-submit:hover:not(:disabled) { background: #3d7de8; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(77,142,247,.35); }
+#btn-submit:hover:not(:disabled), #simple-btn-submit:hover:not(:disabled) { background: var(--accent-hover); }
 #btn-submit:disabled, #simple-btn-submit:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 
 .submit-note {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-sec);
   text-align: center;
-  margin-top: 4px;
+  margin-top: var(--space-2xs);
 }
+.preparation-status { margin-bottom:var(--space-sm);padding:var(--space-md);border:1px solid var(--accent-rule);border-radius:var(--radius-card);background:var(--surface);font-size:14px;line-height:1.55; }
+.preparation-heading { display:flex; align-items:center; justify-content:space-between; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+#preparation-label { font-size:16px; font-weight: 700; }
+#preparation-count { display:block; font-size:13px; color:var(--text-sec); margin-top: var(--space-3xs); }
+#preparation-percent { color:var(--accent); font-size:25px; font-weight: 700; font-variant-numeric:tabular-nums; }
+.preparation-status progress { display:block; appearance:none; width:100%; height:6px; border:0; border-radius:6px; overflow:hidden; background:var(--surface2); accent-color:var(--accent); }
+.preparation-status progress::-webkit-progress-bar { background:var(--surface2); }
+.preparation-status progress::-webkit-progress-value { background:var(--accent); border-radius:6px; }
+.preparation-status progress::-moz-progress-bar { background:var(--accent); border-radius:6px; }
+#preparation-checks { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap: var(--space-2xs); margin: var(--space-sm) 0; }
+#preparation-checks span { display:flex; flex-direction:column; align-items:center; gap: var(--space-2xs); padding: var(--space-xs) 0; border-radius:7px; background:var(--surface2); color:var(--text-sec); font-size:13px; white-space:nowrap; }
+#preparation-checks b { font-size:14px; line-height:1; font-weight:500; }
+#preparation-checks .ready { color:var(--accent-text); background:var(--ready-tint); }
+#preparation-hint { margin: 0; padding-top: var(--space-sm); border-top:1px solid var(--border); font-size:14px; overflow-wrap:anywhere; }
+.preparation-note { display:block; margin-top: var(--space-2xs); color:var(--text-sec); font-size:13px; }
+#auth-recheck { margin-top:var(--space-xs);padding:var(--space-xs) var(--space-sm);border:1px solid var(--border);border-radius:var(--radius-input);background:var(--surface2);color:var(--text);cursor:pointer; }
+#auth-step-login, #preview-grid-selection, #map-point-controls button { margin-top:var(--space-xs);padding:var(--space-xs) var(--space-sm);border:1px solid var(--border);border-radius:var(--radius-input);background:var(--surface2);color:var(--text);font:inherit;cursor:pointer; }
+#preview-grid-selection:disabled { opacity:.45; cursor:not-allowed; }
+#submission-status { margin: var(--space-xs) 0; font-size:14px; white-space:pre-wrap; }
 
 .step-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
-  background: rgba(33,37,58,.45);
+  --step-accent: var(--accent);
+  --step-tint: var(--step-connection-tint);
+  --step-border: var(--step-connection-rule);
+  border: 1px solid var(--step-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-md);
+  background: var(--step-surface);
 }
-.step-title { font-size: 15px; font-weight: 650; margin-bottom: 9px; }
+.step-location { --step-tint:var(--step-location-tint);--step-border:var(--step-location-rule); }
+.step-time { --step-tint:var(--step-time-tint);--step-border:var(--step-time-rule); }
+.step-storage { --step-tint:var(--step-storage-tint);--step-border:var(--step-storage-rule); }
+.step-title { font-size:var(--text-panel-title);font-weight:700;margin: calc(-1 * var(--space-md)) calc(-1 * var(--space-md)) var(--space-md);padding: var(--space-sm) var(--space-md);border-bottom:1px solid var(--step-border);border-radius:var(--radius-card) var(--radius-card) 0 0;background:var(--step-tint);color:var(--text); }
+.step-caption { margin-left: var(--space-xs);font-size:14px;font-weight:400;color:var(--text-sec); }
+.step-time .step-title { display:flex;align-items:center;gap:var(--space-xs);white-space:nowrap; }
+.step-time .step-number { flex-shrink:0;margin-right:0; }
+.step-time .step-caption { margin-left:0; }
+#simple-year-all-wrap { display:inline-flex;align-items:center;gap:var(--space-2xs);margin-left:auto;font-size:14px;font-weight:400;cursor:pointer; }
 .step-number {
-  display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;
-  margin-right:7px;border-radius:50%;background:var(--accent);color:white;font-size:12px;
+  display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+  margin-right: var(--space-xs);border-radius:6px;background:var(--step-accent);color:var(--accent-ink);font-size:14px;
 }
-.input-help { margin-top:6px;color:var(--text-sec);font-size:12px;line-height:1.45; }
-.file-status { margin-top:7px;color:var(--accent);font-size:13px;word-break:break-word; }
+.location-options { margin-top: var(--space-md); }
+.step-location .workflow-tabs { border-color:var(--step-border); }
+.step-location .wf-tab.active { background:var(--accent-selected);color:var(--accent-text); }
+.help-details { margin-top: var(--space-sm);padding-top: var(--space-xs);border-top:1px solid var(--border);font-size:14px;line-height:1.55;color:var(--text-sec); }
+.help-details summary { width:fit-content;cursor:pointer;color:var(--accent-text);font-size:14px; }
+.help-details[open] summary { margin-bottom: var(--space-xs); }
+.help-details .input-help { margin-top: 0; }
+.input-help { margin-top: var(--space-xs);color:var(--text-sec);font-size:14px;line-height:1.5; }
+#output-root-hint { overflow-wrap:anywhere; }
+#output-directory-picker .file-picker-detail { white-space:normal;overflow:visible;text-align:left;font-size:14px; }
+#output-location-options .task-action-btn { margin-top:var(--space-xs); }
+.file-status { margin-top: var(--space-xs);color:var(--accent-text);font-size:14px;word-break:break-word; }
 .native-file-hidden { display:none; }
 .file-picker-tile {
-  width:100%;min-height:86px;padding:10px 12px;border:1px solid var(--border);
-  border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
-  font-family:inherit;transition:all .15s;text-align:center;
+  width:100%;min-height:86px;padding: var(--space-sm) var(--space-sm);border:1px dashed var(--field-border);
+  border-radius:var(--radius-input);background:var(--surface2);color:var(--text);cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap: var(--space-2xs);
+  font-family:inherit;transition:background-color .15s,color .15s,border-color .15s;text-align:center;
 }
-.file-picker-tile:hover { border-color:var(--accent);background:rgba(77,142,247,.1); }
+.file-picker-tile:hover { border-color:var(--accent);background:var(--accent-tint); }
 .file-picker-icon { display:block;font-size:23px;line-height:1; }
-.file-picker-label { display:block;font-size:14px;font-weight:600;white-space:nowrap; }
-.file-picker-detail { display:block;width:100%;font-size:12px;color:var(--text-sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.file-picker-label { display:block;font-size:16px;line-height:1.4;font-weight:500;white-space:nowrap; }
+.file-picker-detail { display:block;width:100%;font-size:13px;color:var(--text-sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .aoi-btns .btn-aoi.picker-vertical {
-  min-width:0;min-height:78px;flex-direction:column;gap:7px;white-space:nowrap;
+  min-width:0;min-height:78px;flex-direction:column;gap: var(--space-xs);white-space:nowrap;
 }
 .aoi-btns .btn-aoi.picker-vertical .file-picker-icon { font-size:22px; }
-.output-picker-row { display:flex;align-items:stretch;gap:7px; }
+.output-picker-row { display:flex;align-items:stretch;gap: var(--space-xs); }
 .output-picker-row .file-picker-tile { min-height:78px;flex:1;min-width:0; }
-.output-clear-btn { width:58px;flex:0 0 58px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text-sec);cursor:pointer;font-family:inherit;font-size:12px; }
-.output-clear-btn:hover { border-color:var(--accent);color:var(--accent); }
 .directory-card { width:min(620px,95vw); }
-.directory-root { padding:9px 11px;border-radius:6px;background:var(--surface2);color:var(--text-sec);font-size:12px;word-break:break-all;margin-bottom:8px; }
-.directory-current { color:var(--text);font-size:14px;font-weight:600;margin:8px 0;word-break:break-all; }
-.directory-list { border:1px solid var(--border);border-radius:7px;max-height:320px;overflow-y:auto; }
-.directory-item { width:100%;padding:10px 12px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text);font:14px var(--font);text-align:left;cursor:pointer;display:flex;gap:9px;align-items:center; }
+.directory-root { padding:var(--space-xs) 0;color:var(--text-sec);font-size:14px;word-break:break-all;margin-bottom:var(--space-xs); }
+.directory-current { color:var(--text);font-size:15px;font-weight: 700;margin: var(--space-xs) 0;word-break:break-all; }
+.directory-list { max-height:320px;overflow-y:auto; }
+.directory-item { width:100%;padding: var(--space-sm) var(--space-sm);border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text);font:14px var(--font);text-align:left;cursor:pointer;display:flex;gap: var(--space-xs);align-items:center; }
 .directory-item:last-child { border-bottom:0; }
-.directory-item:hover { background:rgba(77,142,247,.12);color:var(--accent); }
-.directory-empty { padding:24px;text-align:center;color:var(--text-sec);font-size:13px; }
-.directory-actions { display:flex;gap:8px;margin-top:12px; }
-.directory-actions button { flex:1;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);cursor:pointer;font-family:inherit; }
-.directory-actions button.primary { background:var(--accent);border-color:var(--accent);color:#fff; }
-.directory-create { display:flex;gap:8px;margin-top:10px; }
+.directory-item:hover { background:var(--accent-tint);color:var(--accent-text); }
+.directory-empty { padding: var(--space-lg);text-align:center;color:var(--text-sec);font-size:13px; }
+.directory-actions { display:flex;gap: var(--space-xs);margin-top: var(--space-sm); }
+.directory-actions button { flex:1;padding: var(--space-xs);border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);cursor:pointer;font-family:inherit; }
+.directory-actions button.primary { background:var(--accent);border-color:var(--accent);color:var(--accent-ink); }
+.directory-create { display:flex;gap: var(--space-xs);margin-top: var(--space-sm); }
 .directory-create input { flex:1; }
-.directory-create button { padding:0 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);cursor:pointer; }
+.directory-create button { padding: 0 var(--space-md);border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);cursor:pointer; }
 .compact-hidden { display:none !important; }
 .legacy-form { display:none !important; }
 
@@ -343,35 +407,36 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 #map-wrap {
   flex: 1;
   position: relative;
+  isolation: isolate;
   overflow: hidden;
-  background: #1a2030;
+  background: var(--map-surface);
 }
-#map { width: 100%; height: 100%; background: #1a2030; }
+#map { width:100%;height:100%;background:var(--map-surface);position:relative;isolation:isolate;z-index:var(--z-base); }
 
 /* Map loading overlay */
 #map-loading {
   position: absolute;
   inset: 0;
-  background: #1a2030;
+  background: var(--map-surface);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 40;
-  gap: 12px;
+  z-index: var(--z-map-loading);
+  gap: var(--space-sm);
   transition: opacity .4s;
 }
 #map-loading.hidden { opacity: 0; pointer-events: none; }
 .map-spinner {
   width: 36px; height: 36px;
-  border: 3px solid rgba(77,142,247,.2);
+  border: 3px solid var(--accent-selected);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-#map-loading p { font-size: 13px; color: var(--text-sec); }
-#map-loading.error p { color: #e07070; }
+#map-loading p { font-size: 14px; color: var(--text-sec); }
+#map-loading.error p { color: var(--status-error); }
 
 /* Map error banner */
 #map-error-banner {
@@ -379,17 +444,16 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(30,33,45,.92);
-  border: 1px solid rgba(77,142,247,.4);
+  background: var(--map-error-surface);
+  border: 1px solid var(--accent-strong-rule);
   border-radius: 8px;
-  padding: 8px 16px;
-  font-size: 12px;
+  padding: var(--space-xs) var(--space-md);
+  font-size: 14px;
   color: var(--text-sec);
-  z-index: 50;
+  z-index: var(--z-map-notice);
   display: none;
   text-align: center;
   max-width: 340px;
-  backdrop-filter: blur(8px);
 }
 #map-error-banner.visible { display: block; }
 #map-error-banner strong { color: var(--text); }
@@ -399,14 +463,14 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   position: absolute;
   top: 12px;
   right: 12px;
-  z-index: 1000;
+  z-index: var(--z-map-toolbar);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-xs);
 }
 .map-tool-btn {
   width: 38px; height: 38px;
-  border-radius: 8px;
+  border-radius: var(--radius-input);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -415,62 +479,66 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all .15s;
+  transition: background-color .15s, color .15s, border-color .15s;
   position: relative;
-  box-shadow: 0 2px 10px rgba(0,0,0,.45);
+  box-shadow: 0 2px 10px var(--shadow);
 }
-.map-tool-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--surface2); }
-.map-tool-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 2px 14px rgba(77,142,247,.5); }
+.map-tool-btn:hover { border-color: var(--accent); color: var(--accent-text); background: var(--surface2); }
+.map-tool-btn.active { background:var(--accent);border-color:var(--accent);color:var(--accent-ink); }
 .map-tool-btn[title]::after {
   content: attr(title);
   position: absolute;
   right: 44px;
-  background: rgba(26,29,39,.92);
+  background: var(--floating-surface);
   border: 1px solid var(--border);
   color: var(--text);
-  font-size: 11px;
-  padding: 3px 8px;
+  font-size: 12px;
+  padding: var(--space-2xs) var(--space-xs);
   border-radius: 4px;
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
   transition: opacity .15s;
-  backdrop-filter: blur(8px);
 }
 .map-tool-btn[title]:hover::after { opacity: 1; }
+.map-tool-btn[title]:focus-visible::after { opacity: 1; transition: none; }
 
 /* Base map selector (vector / imagery / grid-only) */
 #basemap-menu {
   position: absolute;
   top: 56px;
   right: 12px;
-  z-index: 1001;
+  z-index: var(--z-map-menu);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 6px;
+  padding: var(--space-xs);
   display: none;
   flex-direction: column;
-  gap: 4px;
-  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+  gap: var(--space-2xs);
+  box-shadow: 0 4px 20px var(--menu-shadow);
   min-width: 132px;
 }
 #basemap-menu.visible { display: flex; }
 .basemap-item {
-  font-size: 12px;
+  font-family: var(--font);
+  font-size: 14px;
+  text-align: left;
+  border: 0;
+  background: transparent;
   color: var(--text-sec);
-  padding: 7px 10px;
+  padding: var(--space-xs) var(--space-sm);
   border-radius: 5px;
   cursor: pointer;
-  transition: all .12s;
+  transition: background-color .12s, color .12s, border-color .12s;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-xs);
 }
-.basemap-item:hover { background: rgba(77,142,247,.15); color: var(--text); }
-.basemap-item.active { background: rgba(77,142,247,.22); color: var(--accent); }
-.basemap-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); opacity: 0; }
-.basemap-item.active .dot { opacity: 1; }
+.basemap-item:hover { background: var(--accent-soft); color: var(--text); }
+.basemap-item.active { background: var(--accent-menu); color: var(--accent-text); }
+.basemap-item .selection-mark { width:16px;color:var(--accent-text);visibility:hidden; }
+.basemap-item.active .selection-mark { visibility:visible; }
 
 /* Draw banner */
 #draw-banner {
@@ -478,48 +546,49 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10000;
-  background: rgba(26,29,39,.92);
+  z-index: var(--z-toast);
+  background: var(--floating-surface);
   border: 1px solid var(--accent);
   border-radius: 20px;
-  padding: 8px 20px;
-  font-size: 13px;
-  color: var(--accent);
+  padding: var(--space-xs) calc(var(--space-2xs) * 5);
+  font-size: 14px;
+  color: var(--accent-text);
   display: none;
   align-items: center;
-  gap: 8px;
-  box-shadow: 0 4px 20px rgba(77,142,247,.3);
-  animation: pulse 2s infinite;
-  backdrop-filter: blur(8px);
+  gap: var(--space-xs);
+  box-shadow: 0 4px 20px var(--shadow);
 }
 #draw-banner.visible { display: flex; }
-#grid-legend { position:absolute;right:16px;bottom:20px;z-index:900;background:rgba(15,17,23,.9);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:11px;color:var(--text-sec);display:none; }
+#grid-legend { position:absolute;right:16px;bottom:20px;z-index:var(--z-map-notice);background:var(--legend-surface);border:1px solid var(--border);border-radius:6px;padding: var(--space-xs) var(--space-sm);font-size:12px;color:var(--text-sec);display:none; }
 #grid-legend.visible { display:block; }
-.legend-line { display:inline-block;width:20px;border-top:2px dashed #f1c40f;margin-right:6px;vertical-align:middle; }
-@keyframes pulse {
-  0%,100% { box-shadow: 0 4px 20px rgba(77,142,247,.3); }
-  50% { box-shadow: 0 4px 28px rgba(77,142,247,.55); }
-}
+.legend-line { display:inline-block;width:20px;border-top:2px dashed var(--map-grid-selected);margin-right: var(--space-xs);vertical-align:middle; }
 
 /* Task panel */
 #task-panel {
   border-top: 1px solid var(--border);
   background: var(--surface);
   flex-shrink: 0;
-  height: 310px;
+  height: 352px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
+#task-panel.is-collapsed { height:auto; }
+.panel-toggle { padding: var(--space-3xs) var(--space-xs);border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-sec);font:13px/18px var(--font);cursor:pointer;white-space:nowrap; }
+.panel-toggle::after { content:' ▾'; }
+.panel-toggle[aria-expanded="false"]::after { content:' ▴'; }
+.panel-toggle:hover { border-color:var(--accent);color:var(--accent-text); }
+#task-panel-body[hidden], #portal-panel-body[hidden] { display:none; }
 #task-panel-header {
   display: flex;
   align-items: center;
-  padding: 10px 18px;
+  padding: var(--space-sm) calc(var(--space-2xs) * 5);
   border-bottom: 1px solid var(--border);
+  background: var(--surface2);
   flex-shrink: 0;
 }
-#task-panel-header h2 { font-size: 15px; font-weight: 650; flex: 1; color: var(--text); }
-.task-panel-btns { display: flex; gap: 6px; }
+#task-panel-header h2 { font-size: 17px; font-weight: 700; flex: 1; color: var(--text); }
+.task-panel-btns { display: flex; gap: var(--space-xs); }
 .icon-btn {
   width: 24px; height: 24px;
   border-radius: 4px;
@@ -531,19 +600,19 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  transition: all .12s;
+  transition: background-color .12s, color .12s, border-color .12s;
 }
-.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
-#task-panel-body { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 10px 18px 14px; display: flex; flex-direction: row; align-items: stretch; gap: 12px; scroll-behavior: smooth; }
-.task-empty { min-width:100%; font-size: 14px; color: var(--text-sec); text-align: center; padding: 52px 0; }
+.icon-btn:hover { border-color: var(--accent); color: var(--accent-text); }
+#task-panel-body { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: var(--space-sm) calc(var(--space-2xs) * 5) var(--space-md); display: flex; flex-direction: row; align-items: stretch; gap: var(--space-sm); scroll-behavior: smooth; background:var(--bg); }
+.task-empty { min-width:100%; font-size: 14px; color: var(--text-sec); text-align: center; padding: calc(var(--space-2xs) * 13) 0; }
 .task-card {
-  background: var(--surface2);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  padding: var(--space-sm) var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-xs);
   flex: 0 0 380px;
   min-width: 380px;
   max-width: 380px;
@@ -551,59 +620,57 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   overflow-y: auto;
 }
 .task-card > * { flex-shrink: 0; }
-.task-card-title { font-size: 14px; font-weight: 650; color: var(--text); display: flex; align-items: center; gap: 8px; }
-.task-card-meta { font-size: 13px; line-height: 1.35; color: var(--text-sec); overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.task-card-meta strong { color: var(--text); font-weight: 550; }
+.task-card-title { font-size: 15px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: var(--space-xs); }
+.task-card-meta { font-size: 14px; line-height: 1.4; color: var(--text-sec); overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.task-card-meta strong { color: var(--text); font-weight: 500; }
 .task-card-path { white-space:normal;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 .task-card-log {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-sec);
-  background: rgba(0,0,0,.2);
+  background: var(--log-surface);
   border-radius: 4px;
-  padding: 4px 6px;
+  padding: var(--space-2xs) var(--space-xs);
   max-height: 85px;
   overflow-y: auto;
-  font-family: 'Consolas', monospace;
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   display: none;
 }
 .task-card-log.shown { display: block; }
-.task-status { font-size: 12px; padding: 3px 8px; border-radius: 10px; font-weight: 600; }
-.task-status.pending { background: rgba(155,89,255,.15); color: #9b59ff; }
-.task-status.queued { background: rgba(155,89,255,.15); color: #9b59ff; }
-.task-status.running { background: rgba(77,142,247,.15); color: var(--accent); }
-.task-status.validating_output { background: rgba(52,211,153,.15); color: #34d399; }
-.task-status.done { background: rgba(46,204,113,.15); color: #2ecc71; }
-.task-status.error, .task-status.failed, .task-status.interrupted { background: rgba(231,76,60,.15); color: #e74c3c; }
-.task-status.cancelled, .task-status.cancelling { background: rgba(241,196,15,.15); color: #f1c40f; }
-.task-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.task-status { font-size: 13px; padding: var(--space-2xs) var(--space-xs); border-radius: 10px; font-weight: 700; }
+.task-status.pending, .task-status.queued { background: var(--status-pending-bg); color: var(--status-pending); }
+.task-status.running { background: var(--accent-soft); color: var(--accent-text); }
+.task-status.validating_output { background: var(--status-validating-bg); color: var(--status-validating); }
+.task-status.done { background: var(--status-done-bg); color: var(--status-done); }
+.task-status.error, .task-status.failed, .task-status.interrupted { background: var(--status-error-bg); color: var(--status-error); }
+.task-status.cancelled, .task-status.cancelling { background: var(--status-warning-bg); color: var(--status-warning); }
+.task-card-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-top: var(--space-3xs); }
 .task-action-btn {
-  font-size: 12px;
-  padding: 4px 9px;
+  font-size: 14px;
+  padding: var(--space-2xs) var(--space-xs);
   border-radius: 4px;
   border: 1px solid var(--border);
   background: none;
   color: var(--text-sec);
   cursor: pointer;
-  transition: all .12s;
+  transition: background-color .12s, color .12s, border-color .12s;
 }
-.task-action-btn:hover { border-color: var(--accent); color: var(--accent); }
-.task-action-btn.danger:hover { border-color: #e74c3c; color: #e74c3c; }
+.task-action-btn:hover { border-color: var(--accent); color: var(--accent-text); }
+.task-action-btn.danger:hover { border-color: var(--status-error); color: var(--status-error); }
 
 /* Progress bar */
 .task-progress {
   height: 6px;
-  background: rgba(0,0,0,.3);
+  background: var(--progress-track);
   border-radius: 3px;
   overflow: hidden;
-  margin-top: 2px;
+  margin-top: var(--space-3xs);
 }
 .task-progress-bar {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  background: var(--accent);
   border-radius: 3px;
-  transition: width .4s ease;
 }
 .task-progress-bar.indeterminate {
   width: 35% !important;
@@ -611,26 +678,36 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   animation: indet 1.2s linear infinite;
 }
 @keyframes indet {
-  0% { margin-left: -35%; }
-  100% { margin-left: 100%; }
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(286%); }
 }
 .task-progress-text {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-sec);
-  margin-top: 2px;
+  margin-top: var(--space-3xs);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: var(--space-2xs) var(--space-xs);
 }
-.task-validation.ok { color:#2ecc71; }
-.task-validation.failed { color:#e74c3c; }
-.modal-backdrop { position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:3000;display:none;align-items:center;justify-content:center;padding:30px; }
-.modal-backdrop.visible { display:flex; }
-.modal-card { width:min(900px,95vw);max-height:88vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px; }
-.modal-card-header { display:flex;align-items:center;gap:10px;margin-bottom:12px; }
-.modal-card-header h3 { flex:1;font-size:14px; }
-.modal-card pre { white-space:pre-wrap;word-break:break-word;font:11px/1.5 Consolas,monospace;color:var(--text-sec); }
+.task-validation.ok { color:var(--status-done); }
+.task-validation.failed { color:var(--status-error); }
+.modal-backdrop { position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin: 0;border:0;background:transparent;color:var(--text);font:16px/1.5 var(--font);z-index:var(--z-modal);display:none;align-items:center;justify-content:center;padding: calc(var(--space-2xs) * 8); }
+.modal-backdrop::backdrop { background:var(--backdrop); }
+.modal-backdrop.visible[open] { display:flex; }
+.modal-backdrop:not([open]) { display:none; }
+.modal-card { width:min(900px,95vw);max-width:100%;max-height:min(88vh,100%);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-card);padding:var(--space-md); }
+.modal-card-header { display:flex;align-items:center;gap: var(--space-sm);margin-bottom: var(--space-sm); }
+.modal-card-header h3 { flex:1;font-size:17px; }
+.modal-card pre { white-space:pre-wrap;word-break:break-word;font:13px/1.5 var(--font-mono);color:var(--text-sec); }
+
+@media (prefers-reduced-motion: reduce) {
+  .map-spinner, .task-progress-bar.indeterminate { animation:none; }
+  .task-progress-bar.indeterminate { transform:translateX(93%); }
+  #map-loading, .map-tool-btn[title]::after { transition:none; }
+  #task-panel-body { scroll-behavior:auto; }
+  .leaflet-zoom-anim .leaflet-zoom-animated, .leaflet-fade-anim .leaflet-tile { transition:none; }
+}
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 4px; }
@@ -638,36 +715,75 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* ── Leaflet dark theme overrides ── */
-.leaflet-container { background: #1a2030; font-family: var(--font); }
+/* ── Leaflet controls ── */
+.leaflet-container { background: var(--map-surface); font-family: var(--font); }
 .leaflet-bar a, .leaflet-control-zoom a {
-  background: rgba(26,29,39,.9);
+  background: var(--map-control-surface);
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
-.leaflet-bar a:hover { background: rgba(77,142,247,.25); color: var(--accent); }
+.leaflet-bar a:hover { background: var(--accent-map-hover); color: var(--accent-text); }
 .leaflet-control-attribution {
-  background: rgba(26,29,39,.7) !important;
+  background: var(--map-attribution-surface) !important;
   color: var(--text-sec) !important;
   font-size: 10px;
 }
-.leaflet-control-attribution a { color: var(--accent) !important; }
+.leaflet-control-attribution a { color: var(--accent-text) !important; }
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface); color: var(--text); }
-.aoi-vertex { background: var(--accent); border: 2px solid #fff; border-radius: 50%; }
+.aoi-vertex { background: var(--accent); border: 2px solid var(--vertex-border); border-radius: 50%; }
+@media (max-width:700px) {
+  #header { grid-template-columns:minmax(0,1fr) auto;padding:var(--space-xs) var(--space-md);gap:var(--space-xs); }
+  .header-tag { display:none; }
+  #header-product { grid-column:1;grid-row:2;text-align:left;position:static; }
+  .header-session { grid-column:1 / -1;grid-row:3; }
+  .header-actions { display:contents; }
+  .header-actions a, .header-actions button { padding:var(--space-2xs) var(--space-xs); }
+  #header #view-switch { grid-column:2;grid-row:2;justify-self:end; }
+  .header-actions a[href*='github.com'] { grid-column:2;grid-row:1;justify-self:end; }
+  #header #auth-login, #header #auth-logout { grid-column:1 / -1;grid-row:4;justify-self:start; }
+  #main { display:block;overflow-y:auto; }
+  #sidebar { width:100%;min-width:0;overflow:visible; }
+  #sidebar-scroll { overflow:visible; }
+  #workspace { height:90vh;min-height:560px; }
+}
 </style>
+<link rel="stylesheet" href="/static/portal.css">
 </head>
 <body>
 <div id="app">
 
   <!-- Header -->
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <defs>
+      <symbol id="icon-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6"/></symbol>
+      <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7V5h6l2 2h10v13H3z"/></symbol>
+      <symbol id="icon-pencil" viewBox="0 0 24 24"><path d="m16 3 5 5-12 12-6 1 1-6zM13 6l5 5"/></symbol>
+      <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V3h8v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+      <symbol id="icon-hand" viewBox="0 0 24 24"><path d="M8 12V5a2 2 0 0 1 4 0v7-8a2 2 0 0 1 4 0v8-6a2 2 0 0 1 4 0v9c0 5-3 7-7 7-3 0-5-2-7-5l-3-5a2 2 0 0 1 3-2l2 2Z"/></symbol>
+      <symbol id="icon-layers" viewBox="0 0 24 24"><path d="m2 7 10-5 10 5-10 5zM2 12l10 5 10-5M2 17l10 5 10-5"/></symbol>
+      <symbol id="icon-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+      <symbol id="icon-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    </defs>
+  </svg>
   <div id="header">
-    <h1>AEF-GRiTS</h1>
-    <span class="header-tag">嵌入式特征数据下载工具</span>
-    <span class="spacer"></span>
-    <span id="auth-state" style="font-size:13px;color:var(--text-sec)">认证检查中</span>
-    <a id="auth-login" href="/api/auth/login" style="display:none">登录 Earth Engine</a>
-    <button id="auth-logout" type="button" onclick="logoutAuth()" style="display:none">退出</button>
-    <a href="https://github.com/ottoKae/AEF-GRiTS" target="_blank">GitHub</a>
+    <div class="header-brand">
+      <h1>AEF-GRiTS</h1>
+      <span class="header-tag">嵌入式特征数据下载工具</span>
+    </div>
+    <div id="header-product">
+      <strong>AEF 年度嵌入</strong>
+      <span class="header-product-meta">64 维 / 10 m</span>
+    </div>
+    <div class="header-session">
+      <span class="header-session-label visually-hidden">连接状态</span>
+      <span id="auth-state">认证检查中</span>
+    </div>
+    <div class="header-actions">
+      <a id="view-switch" href="/portal">网页工作台</a>
+      <a id="auth-login" href="/api/auth/login" style="display:none">登录 Earth Engine</a>
+      <button id="auth-logout" type="button" onclick="logoutAuth()" style="display:none">退出</button>
+      <a href="https://github.com/ottoKae/AEF-GRiTS" target="_blank">GitHub</a>
+    </div>
   </div>
 
   <div id="main">
@@ -676,32 +792,70 @@ input:disabled { opacity: .5; cursor: not-allowed; }
     <div id="sidebar">
       <div id="sidebar-scroll">
 
-        <div class="step-card">
-          <div class="step-title"><span class="step-number">1</span>选择下载目标</div>
-          <div class="workflow-tabs">
-            <button class="wf-tab active" id="simple-wf-point" onclick="setWorkflow('point')"><span>📍</span><span>点位</span></button>
-            <button class="wf-tab" id="simple-wf-grid" onclick="setWorkflow('grid')"><span>🗺</span><span>格网</span></button>
+        <div class="step-card step-connection">
+          <div class="step-title"><span class="step-number">P0</span>数据源与连接</div>
+          <div class="field">
+            <label for="data-source">数据源</label>
+            <select id="data-source" onchange="changeDataSource()">
+              <option value="gee">Google Earth Engine</option>
+              <option value="public">公开 AEF COG（仅连通检查）</option>
+            </select>
+          </div>
+          <div id="public-source-controls" hidden>
+            <p class="input-help">无需登录；仅检查连接，暂不支持下载。</p>
+            <button class="btn-aoi" type="button" id="public-source-probe" onclick="probePublicSource()">检查匿名数据源</button>
+            <p id="public-source-result" class="input-help" role="status"></p>
+          </div>
+          <div class="field" id="project-field">
+            <label for="project">Earth Engine Project ID</label>
+            <input type="text" id="project" placeholder="例如：my-earthengine-project" autocomplete="off">
+          </div>
+          <div class="input-help" id="auth-help">正在读取访问模式…</div>
+          <details class="help-details">
+            <summary>Project ID 与授权说明</summary>
+            <p>填写 Cloud Project ID，不是项目名称、邮箱或密码。该项目需注册 Earth Engine 并启用 API，您的 Google 账号需有访问权限。</p>
+            <p>本机模式使用您的 EE/ADC 凭据。已有凭据可直接验证；需要登录时，点击 Google 授权，在 Google 官方页面完成操作。找到凭据不等于能访问数据，下载前仍需验证连接。</p>
+            <p>授权凭据由 Earth Engine 保存在当前用户的 .config/earthengine/credentials，不是 netrc，也不保存您的 Google 密码。授权后点击“验证连接”。</p>
+          </details>
+          <button class="btn-aoi" id="auth-step-login" type="button" hidden onclick="document.getElementById('auth-login').click()">前往Google登录授权</button>
+          <div id="local-auth-controls" hidden>
+            <div class="aoi-btns">
+              <button class="btn-aoi" type="button" onclick="startLocalAuth('status')">检测凭据</button>
+              <button class="btn-aoi" type="button" onclick="startLocalAuth('login')">Google 授权</button>
+              <button class="btn-aoi" type="button" onclick="startLocalAuth('verify')">验证连接</button>
+              <button class="btn-aoi" type="button" id="local-auth-cancel" hidden onclick="cancelLocalAuth()">取消等待</button>
+            </div>
+            <p id="local-auth-result" class="input-help" role="status">下载前请验证连接。</p>
           </div>
         </div>
 
-        <div id="simple-point-options" class="step-card">
-          <div class="step-title"><span class="step-number">2</span>选择点位文件</div>
+        <div class="step-card step-location">
+          <div class="step-title"><span class="step-number">P1</span>选择位置</div>
+          <div class="workflow-tabs">
+            <button class="wf-tab active" id="simple-wf-point" onclick="setWorkflow('point')"><span>点位</span></button>
+            <button class="wf-tab" id="simple-wf-grid" onclick="setWorkflow('grid')"><span>格网</span></button>
+          </div>
+        <div id="simple-point-options" class="location-options">
           <div class="workflow-tabs">
             <button class="wf-tab active" id="point-source-csv" onclick="setPointSourceType('csv')">CSV</button>
             <button class="wf-tab" id="point-source-shp" onclick="setPointSourceType('shp')">Shapefile</button>
+            <button class="wf-tab" id="point-source-map" onclick="setPointSourceType('map')">地图选点</button>
           </div>
           <button class="file-picker-tile" id="point-file-picker" type="button" style="margin-top:10px" onclick="document.getElementById('simple-point-files').click()">
-            <span class="file-picker-icon" id="point-picker-icon">📄</span>
+            <span class="file-picker-icon" id="point-picker-icon"><svg class="ui-icon" aria-hidden="true"><use href="#icon-file"/></svg></span>
             <span class="file-picker-label" id="point-picker-label">选择 CSV 文件</span>
             <span class="file-picker-detail" id="point-picker-detail">尚未选择文件</span>
           </button>
           <input class="native-file-hidden" type="file" id="simple-point-files" accept=".csv">
-          <div class="input-help" id="point-file-help">CSV 必须包含唯一 sample_id，以及 WGS84 的 lon、lat。</div>
+          <div class="input-help" id="point-file-help">CSV：唯一 sample_id，WGS84 经度 lon、纬度 lat。</div>
           <div class="file-status" id="point-file-status"></div>
+          <div id="map-point-controls" hidden>
+            <p class="input-help">单击地图选点，再点标记可删除。WGS84 坐标，10 m 采样。</p>
+            <button type="button" onclick="mapPoints=[]; syncMapPoints()">清空选点</button>
+          </div>
         </div>
 
-        <div id="simple-grid-options" class="step-card" style="display:none">
-          <div class="step-title"><span class="step-number">2</span>选择格网与空间范围</div>
+        <div id="simple-grid-options" class="location-options" style="display:none">
           <div class="workflow-tabs">
             <button class="wf-tab active" id="scheme-mgrs" onclick="setGridScheme('mgrs')">MGRS</button>
             <button class="wf-tab" id="scheme-tessera" onclick="setGridScheme('tessera_0p1')">Tessera 0.1°</button>
@@ -709,48 +863,75 @@ input:disabled { opacity: .5; cursor: not-allowed; }
           <div class="aoi-box" style="margin-top:10px">
             <div id="simple-aoi-status" class="aoi-status empty">尚未设置空间范围</div>
             <div class="aoi-btns">
-              <button class="btn-aoi picker-vertical" type="button" id="aoi-shapefile-picker" onclick="document.getElementById('aoi-files').click()"><span class="file-picker-icon">📂</span><span class="file-picker-label">Shapefile</span></button>
-              <button class="btn-aoi picker-vertical" id="btn-draw-simple" onclick="startDraw()"><span class="file-picker-icon">✏️</span><span class="file-picker-label">矢量绘制</span></button>
-              <button class="btn-aoi picker-vertical" onclick="clearAOI()"><span class="file-picker-icon">🗑️</span><span>清空范围</span></button>
+              <button class="btn-aoi picker-vertical" type="button" id="aoi-shapefile-picker" onclick="document.getElementById('aoi-files').click()"><span class="file-picker-icon"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"/></svg></span><span class="file-picker-label">Shapefile</span></button>
+              <button class="btn-aoi picker-vertical" id="btn-draw-simple" onclick="startDraw()"><span class="file-picker-icon"><svg class="ui-icon" aria-hidden="true"><use href="#icon-pencil"/></svg></span><span class="file-picker-label">矢量绘制</span></button>
+              <button class="btn-aoi picker-vertical" onclick="clearAOI()"><span class="file-picker-icon"><svg class="ui-icon" aria-hidden="true"><use href="#icon-trash"/></svg></span><span>清空范围</span></button>
             </div>
             <input type="file" id="aoi-files" multiple accept=".wkt,.zip,.shp,.shx,.dbf,.prj,.cpg" style="display:none" onchange="importAOIFiles(this)">
             <div class="aoi-import-name" id="simple-vector-file-name"></div>
-            <div class="input-help">请选择完整Shapefile组件或上传ZIP，系统依据.prj自动识别坐标系并重投影。</div>
+            <details class="help-details"><summary>文件与坐标要求</summary><p>上传完整 Shapefile 组件或 ZIP，必须含 .prj；系统自动识别坐标系并重投影。地图显示不改变输出格网的 UTM 坐标。</p></details>
+            <button type="button" id="preview-grid-selection" onclick="selectedGridIds=null; submitTask({previewOnly:true})">显示格网 / 重置选择</button>
+            <p class="input-help" id="grid-selection-hint">设置范围后显示格网；单击勾选，黄色为已选。</p>
           </div>
         </div>
+        </div>
 
-        <div class="step-card">
-          <div class="step-title"><span class="step-number">3</span>选择年份与存储位置</div>
-          <div class="field" style="margin-bottom:12px">
-            <label>Earth Engine Project</label>
-            <input type="text" id="project" placeholder="YOUR_GEE_PROJECT" autocomplete="off">
-            <div class="input-help">使用您当前Google账号有权访问并已启用Earth Engine API的Cloud Project。</div>
+        <div class="step-card step-time">
+          <div class="step-title">
+            <span class="step-number">P2</span><span>选择年份</span><span class="step-caption">可多选</span>
+            <label id="simple-year-all-wrap" for="simple-year-all"><input type="checkbox" id="simple-year-all">全部年份</label>
           </div>
-          <div class="section-title">年份（可多选）</div>
           <div class="year-tags-scroll" id="simple-year-tags"></div>
-          <div id="simple-year-all-wrap" style="display:flex;align-items:center;gap:8px;margin-top:7px">
-            <input type="checkbox" id="simple-year-all"><label for="simple-year-all" style="font-size:13px">全部年份</label>
+        </div>
+        <div class="step-card step-storage">
+          <div class="step-title"><span class="step-number">P3</span>保存与下载</div>
+          <div id="raster-format-field" class="field" hidden>
+            <label for="output-format">格网输出格式</label>
+            <select id="output-format" onchange="validateForm()">
+              <option value="zarr">Zarr（可续传）</option>
+              <option value="geotiff">仅 GeoTIFF（清理临时 Zarr）</option>
+              <option value="zarr+geotiff">Zarr + GeoTIFF</option>
+            </select>
+            <details class="help-details"><summary>格式与临时空间说明</summary><p>GeoTIFF 每年 64 波段，float32 无损压缩，大影像使用 BigTIFF。“仅 GeoTIFF”在校验成功后清理本任务临时 Zarr；失败则保留续传。导出期间仍需两份空间，预检会计入。</p></details>
           </div>
           <div class="field" style="margin-top:12px">
-            <label>存储子目录</label>
+            <label>存储位置</label>
             <div class="output-picker-row">
               <button class="file-picker-tile" type="button" id="output-directory-picker" onclick="openOutputBrowser()">
-                <span class="file-picker-icon">📁</span>
-                <span class="file-picker-label">选择存储子目录</span>
-                <span class="file-picker-detail" id="output-picker-detail">未指定，任务将自动命名</span>
+                <span class="file-picker-icon"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"/></svg></span>
+                <span class="file-picker-label" id="output-picker-label">选择本地文件夹</span>
+                <span class="file-picker-detail" id="output-picker-detail"><span id="output-root-hint">正在读取存储位置…</span></span>
               </button>
-              <button class="output-clear-btn" type="button" onclick="clearOutputDirectory()">自动<br>命名</button>
             </div>
             <input type="hidden" id="simple-output" value="">
+            <input type="hidden" id="native-output-token" value="">
           </div>
-          <div class="input-help" id="output-root-hint">保存到 Web 服务的 output 目录；下载前会检查磁盘空间。</div>
+          <p class="input-help" id="output-folder-status" role="status" hidden></p>
+          <details class="help-details" id="output-location-options"><summary>其他位置选项</summary>
+            <button class="task-action-btn" id="output-browser-fallback" type="button" onclick="openOutputBrowser(true)">网页内选择子目录</button>
+            <button class="task-action-btn" type="button" onclick="clearOutputDirectory()">默认目录</button>
+          </details>
         </div>
 
         <div>
-          <button id="simple-btn-submit" disabled onclick="submitTask()">⬇ 开始下载</button>
-          <div id="simple-plan-summary" style="display:none;margin-top:8px;font-size:13px;color:var(--text-sec);white-space:pre-wrap"></div>
-          <div id="simple-crs-summary" style="display:none;margin-top:6px;font-size:13px;color:var(--text-sec);white-space:pre-wrap"></div>
-          <p class="submit-note">系统先检查范围、CRS、数据量和磁盘，然后请您确认。</p>
+          <div class="preparation-status">
+            <div class="preparation-heading">
+              <div><label id="preparation-label" for="preparation-progress">配置准备</label><span id="preparation-count">P0 至 P3 条件检查</span></div>
+              <strong id="preparation-percent">0%</strong>
+            </div>
+            <progress id="preparation-progress" max="100" value="0"></progress>
+            <div id="preparation-checks"></div>
+            <p id="preparation-hint" role="status"></p>
+            <small class="preparation-note">准备进度不代表数据下载进度</small>
+            <button id="auth-recheck" type="button" onclick="loadAuthStatus()" hidden>重新检查登录状态</button>
+          </div>
+          <button id="simple-btn-submit" disabled onclick="submitTask()">开始下载</button>
+          <progress id="preflight-progress" aria-label="服务器预检与提交" style="width:100%" hidden></progress>
+          <p id="submission-status" role="status" hidden></p>
+          <details class="help-details" id="simple-plan-details" hidden><summary>查看预检详情</summary>
+            <div id="simple-plan-summary" style="white-space:pre-wrap"></div>
+            <div id="simple-crs-summary" style="white-space:pre-wrap"></div>
+          </details>
         </div>
 
         <div class="legacy-form">
@@ -774,12 +955,12 @@ input:disabled { opacity: .5; cursor: not-allowed; }
           <div class="aoi-box">
             <div id="aoi-status" class="aoi-status empty">请在地图上绘制/导入区域</div>
             <div class="aoi-btns">
-              <button class="btn-aoi" id="btn-draw" onclick="startDraw()">✏️ 绘制多边形</button>
-              <button class="btn-aoi" onclick="clearAOI()">🗑 清空</button>
+              <button class="btn-aoi" id="btn-draw" onclick="startDraw()">绘制多边形</button>
+              <button class="btn-aoi" onclick="clearAOI()">清空</button>
             </div>
             <div class="aoi-import">
               <div class="aoi-import-label">导入WGS84 GeoJSON，或包含PRJ的完整Shapefile ZIP</div>
-              <button class="aoi-import-btn" type="button" onclick="document.getElementById('vector-file').click()">📂 导入研究区矢量</button>
+              <button class="aoi-import-btn" type="button" onclick="document.getElementById('vector-file').click()">导入研究区矢量</button>
               <div class="aoi-import-name" id="vector-file-name"></div>
               <input type="file" id="vector-file" accept=".geojson,.json,.zip" style="display:none" onchange="importVectorFile(this)">
             </div>
@@ -811,10 +992,10 @@ input:disabled { opacity: .5; cursor: not-allowed; }
           <div class="section-title">工作流</div>
           <div class="workflow-tabs">
             <button class="wf-tab active" id="wf-grid" onclick="setWorkflow('grid')">
-              <span>🗺</span><span>网格下载</span>
+              <span>网格下载</span>
             </button>
             <button class="wf-tab" id="wf-point" onclick="setWorkflow('point')">
-              <span>📍</span><span>点位下载</span>
+              <span>点位下载</span>
             </button>
           </div>
         </div>
@@ -888,7 +1069,7 @@ input:disabled { opacity: .5; cursor: not-allowed; }
         <!-- Advanced -->
         <details style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
           <summary style="padding:9px 12px;font-size:12px;color:var(--text-sec);cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;background:var(--surface2)">
-            ⚙️ 高级选项
+            高级选项
           </summary>
           <div style="padding:10px 12px;display:flex;flex-direction:column;gap:8px">
             <div class="field">
@@ -905,7 +1086,7 @@ input:disabled { opacity: .5; cursor: not-allowed; }
         <!-- Submit -->
         <div>
           <button id="btn-submit" disabled onclick="submitTask()">
-            🔎 规划并提交任务
+            规划并提交任务
           </button>
           <div id="plan-summary" style="display:none;margin-top:8px;font-size:11px;color:var(--text-sec);white-space:pre-wrap"></div>
           <div id="crs-summary" style="display:none;margin-top:6px;font-size:11px;color:var(--text-sec);white-space:pre-wrap"></div>
@@ -923,7 +1104,7 @@ input:disabled { opacity: .5; cursor: not-allowed; }
       <!-- Loading overlay -->
       <div id="map-loading">
         <div class="map-spinner"></div>
-        <p id="map-loading-text">正在初始化地图...</p>
+        <p id="map-loading-text">正在初始化地图…</p>
       </div>
       <!-- Error banner -->
       <div id="map-error-banner"></div>
@@ -931,37 +1112,38 @@ input:disabled { opacity: .5; cursor: not-allowed; }
       <div id="map"></div>
       <!-- Toolbar -->
       <div id="map-toolbar">
-        <button class="map-tool-btn" id="toolpan" title="平移" onclick="setTool('pan')">✋</button>
-        <button class="map-tool-btn" id="tooldraw" title="绘制多边形" onclick="startDraw()">✏️</button>
-        <button class="map-tool-btn" id="toolloc" title="定位中国" onclick="flyChina()">🇨🇳</button>
-        <button class="map-tool-btn" id="toolmap" title="切换底图" onclick="toggleBaseMapMenu()">🗺</button>
+        <button class="map-tool-btn" id="toolpan" title="平移" aria-label="平移" onclick="setTool('pan')"><svg class="ui-icon" aria-hidden="true"><use href="#icon-hand"/></svg></button>
+        <button class="map-tool-btn" id="tooldraw" title="绘制多边形" aria-label="绘制多边形" onclick="startDraw()"><svg class="ui-icon" aria-hidden="true"><use href="#icon-pencil"/></svg></button>
+        <button class="map-tool-btn" id="toolloc" title="定位中国" aria-label="定位中国" onclick="flyChina()">CN</button>
+        <button class="map-tool-btn" id="toolmap" title="切换底图" aria-label="切换底图" aria-controls="basemap-menu" aria-expanded="false" onclick="toggleBaseMapMenu()"><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"/></svg></button>
       </div>
       <!-- Base map menu -->
-      <div id="basemap-menu">
-        <div class="basemap-item active" data-base="road" onclick="setBaseMap('road')"><span class="dot"></span><span>🗺 矢量地图</span></div>
-        <div class="basemap-item" data-base="sat" onclick="setBaseMap('sat')"><span class="dot"></span><span>🛰 影像底图</span></div>
-        <div class="basemap-item" data-base="grid" onclick="setBaseMap('grid')"><span class="dot"></span><span>▦ 仅经纬网格</span></div>
+      <div id="basemap-menu" role="group" aria-label="选择底图">
+        <button type="button" class="basemap-item active" data-base="road" aria-pressed="true" onclick="setBaseMap('road')"><span class="selection-mark" aria-hidden="true">✓</span><span>矢量地图</span></button>
+        <button type="button" class="basemap-item" data-base="sat" aria-pressed="false" onclick="setBaseMap('sat')"><span class="selection-mark" aria-hidden="true">✓</span><span>影像底图</span></button>
+        <button type="button" class="basemap-item" data-base="grid" aria-pressed="false" onclick="setBaseMap('grid')"><span class="selection-mark" aria-hidden="true">✓</span><span>仅经纬网格</span></button>
       </div>
       <!-- Draw banner -->
       <div id="draw-banner">
-        <span>✏️</span>
-        <span id="draw-banner-text">绘制多边形中 — 单击添加顶点，双击完成</span>
+        <svg class="ui-icon" aria-hidden="true"><use href="#icon-pencil"/></svg>
+        <span id="draw-banner-text">绘制多边形中，单击添加顶点，双击完成</span>
       </div>
       <div id="grid-legend"><span class="legend-line"></span><span id="grid-legend-text">已解析格网</span></div>
     </div><!-- /map-wrap -->
 
     <!-- Horizontal task dock: newest tasks are rendered first on the left. -->
-    <div id="task-panel">
+    <div id="task-panel" class="collapsible-panel">
       <div id="task-panel-header">
-        <h2>📋 下载任务</h2>
+        <h2>下载任务</h2>
         <div class="task-panel-btns">
-          <button class="icon-btn" onclick="scrollTaskDock(-1)" title="向左滚动">‹</button>
-          <button class="icon-btn" onclick="scrollTaskDock(1)" title="向右滚动">›</button>
+          <button class="icon-btn" onclick="scrollTaskDock(-1)" title="向左滚动" aria-label="向左滚动"><svg class="ui-icon" aria-hidden="true"><use href="#icon-left"/></svg></button>
+          <button class="icon-btn" onclick="scrollTaskDock(1)" title="向右滚动" aria-label="向右滚动"><svg class="ui-icon" aria-hidden="true"><use href="#icon-right"/></svg></button>
           <button class="icon-btn" onclick="loadTasks()" title="刷新">↻</button>
           <button class="icon-btn" onclick="clearTasks()" title="清空">✕</button>
+          <button id="task-panel-toggle" class="panel-toggle" type="button" aria-expanded="true" aria-controls="task-panel-body" onclick="setPanelCollapsed('task-panel', this.getAttribute('aria-expanded') === 'true')">收起</button>
         </div>
       </div>
-      <div id="task-panel-body">
+      <div id="task-panel-body" tabindex="-1" aria-label="下载任务列表">
         <div class="task-empty" id="task-empty">暂无下载任务</div>
       </div>
     </div>
@@ -969,12 +1151,13 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 
   </div><!-- /main -->
 </div><!-- /app -->
-<div id="directory-modal" class="modal-backdrop" onclick="if(event.target===this) closeOutputBrowser()">
+<dialog id="directory-modal" class="modal-backdrop" aria-labelledby="directory-title" aria-modal="true" onclick="if(event.target===this) closeOutputBrowser()">
   <div class="modal-card directory-card">
-    <div class="modal-card-header"><h3>选择服务端存储子目录</h3><button class="icon-btn" onclick="closeOutputBrowser()">✕</button></div>
+    <div class="modal-card-header"><h3 id="directory-title">选择下载存储子目录</h3><button type="button" class="icon-btn" aria-label="关闭目录选择" onclick="closeOutputBrowser()">✕</button></div>
     <div class="directory-root" id="directory-root">正在读取输出根目录…</div>
     <div class="directory-current" id="directory-current">/</div>
     <div class="directory-list" id="directory-list"><div class="directory-empty">正在加载…</div></div>
+    <label for="directory-new-name">新子目录名称</label>
     <div class="directory-create">
       <input type="text" id="directory-new-name" placeholder="输入新子目录名称">
       <button type="button" onclick="createOutputFolder()">新建</button>
@@ -984,13 +1167,13 @@ input:disabled { opacity: .5; cursor: not-allowed; }
       <button type="button" class="primary" onclick="selectCurrentOutputDirectory()">选择当前目录</button>
     </div>
   </div>
-</div>
-<div id="result-modal" class="modal-backdrop" onclick="if(event.target===this) closeResults()">
+</dialog>
+<dialog id="result-modal" class="modal-backdrop" aria-labelledby="result-title" aria-modal="true" onclick="if(event.target===this) closeResults()">
   <div class="modal-card">
-    <div class="modal-card-header"><h3>任务结果与科研复现信息</h3><button class="icon-btn" onclick="closeResults()">✕</button></div>
+    <div class="modal-card-header"><h3 id="result-title">任务结果与科研复现信息</h3><button type="button" class="icon-btn" aria-label="关闭任务结果" onclick="closeResults()">✕</button></div>
     <pre id="result-content"></pre>
   </div>
-</div>
+</dialog>
 
 <!-- Leaflet (local, keyless) -->
 <script src="/static/leaflet/leaflet.js"></script>
@@ -1013,7 +1196,13 @@ let baseLayerMode = 'road'; // 'road' | 'sat' | 'grid'
 let currentWorkflow = 'point';
 let pointSourceType = 'csv';
 let tasks = [];
-let authReady = true;
+let authReady = false;
+let webAuthMode = 'unknown';
+let localAuthTimer = null;
+let submittingTask = false;
+let mapPoints = [];
+let pointLayer = null;
+let selectedGridIds = null;
 let mapReady = false;
 let eventSources = {};       // runId -> EventSource (live log/progress)
 let taskLogs = {};           // runId -> bounded recent log lines
@@ -1026,6 +1215,15 @@ let aoiCrs = 'EPSG:4326';
 let supportedYears = [2017,2018,2019,2020,2021,2022,2023,2024,2025];
 let outputBrowserPath = '';
 let outputBrowserParent = null;
+let configuredOutputRoot = '';
+const themeColors = getComputedStyle(document.documentElement);
+const mapColors = {
+  graticule: themeColors.getPropertyValue('--map-graticule').trim(),
+  aoi: themeColors.getPropertyValue('--map-aoi').trim(),
+  selected: themeColors.getPropertyValue('--map-grid-selected').trim(),
+  muted: themeColors.getPropertyValue('--map-grid-muted').trim(),
+  point: themeColors.getPropertyValue('--map-point').trim(),
+};
 
 // ── Build year tags ────────────────────────────────────────────────────────
 function buildYearTags(years = supportedYears) {
@@ -1033,13 +1231,16 @@ function buildYearTags(years = supportedYears) {
   if (!container) return;
   container.innerHTML = '';
   years.forEach(y => {
-    const tag = document.createElement('div');
+    const tag = document.createElement('button');
+    tag.type = 'button';
     tag.className = 'year-tag' + (y === Math.max(...years) ? ' active' : '');
+    tag.setAttribute('aria-pressed', String(tag.classList.contains('active')));
     tag.textContent = y;
     tag.dataset.year = y;
     tag.onclick = () => {
       tag.classList.toggle('active');
-      document.getElementById('simple-year-all').checked = false;
+      tag.setAttribute('aria-pressed', String(tag.classList.contains('active')));
+      document.getElementById('simple-year-all').checked = container.querySelectorAll('.year-tag.active').length === years.length;
       validateForm();
     };
     container.appendChild(tag);
@@ -1047,6 +1248,7 @@ function buildYearTags(years = supportedYears) {
   document.getElementById('simple-year-all').onchange = function () {
     document.querySelectorAll('#simple-year-tags .year-tag').forEach(t => {
       t.classList.toggle('active', this.checked);
+      t.setAttribute('aria-pressed', String(this.checked));
     });
     validateForm();
   };
@@ -1069,7 +1271,9 @@ function initMap() {
     return;
   }
 
-  map = L.map('map', { center: [35, 105], zoom: 4, zoomControl: true, worldCopyJump: true });
+  const animate = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  map = L.map('map', { center: [35, 105], zoom: 4, zoomControl: true, worldCopyJump: true,
+    zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate, inertia: animate });
 
   roadLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
     maxZoom: 19, subdomains: ['mt0','mt1','mt2','mt3'], attribution: '&copy; Google', keepBuffer: 2
@@ -1083,10 +1287,16 @@ function initMap() {
   aoiLayer = L.layerGroup().addTo(map);
   resolvedGridLayer = L.layerGroup().addTo(map);
   drawLayer = L.layerGroup().addTo(map);
+  pointLayer = L.layerGroup().addTo(map);
   graticuleLayer = buildGraticule().addTo(map);
 
   // Drawing interactions
-  map.on('click', (e) => { if (drawMode) addDrawVertex(e.latlng); });
+  map.on('click', (e) => {
+    if (currentWorkflow === 'point' && pointSourceType === 'map') {
+      mapPoints.push([e.latlng.wrap().lng, e.latlng.lat]);
+      syncMapPoints();
+    } else if (drawMode) addDrawVertex(e.latlng);
+  });
   map.on('dblclick', (e) => {
     if (drawMode) { L.DomEvent.stop(e); finishDraw(); }
   });
@@ -1102,7 +1312,7 @@ function buildGraticule() {
   const g = L.layerGroup();
   const lngs = []; for (let x = -180; x <= 180; x += 10) lngs.push(x);
   const lats = []; for (let y = -90; y <= 90; y += 10) lats.push(y);
-  const opts = { color: 'rgba(255,255,255,0.22)', weight: 1, interactive: false };
+  const opts = { color: mapColors.graticule, opacity: .35, weight: 1, interactive: false };
   lngs.forEach(lng => g.addLayer(L.polyline([[-90, lng], [90, lng]], opts)));
   lats.forEach(lat => g.addLayer(L.polyline([[lat, -180], [lat, 180]], opts)));
   return g;
@@ -1110,7 +1320,7 @@ function buildGraticule() {
 
 function showMapError(msg) {
   const banner = document.getElementById('map-error-banner');
-  banner.innerHTML = '<strong>⚠️ 地图提示</strong><br>' + msg;
+  banner.innerHTML = '<strong>地图提示</strong><br>' + msg;
   banner.classList.add('visible');
 }
 
@@ -1142,12 +1352,18 @@ function setBaseMap(mode) {
   // Update menu UI
   document.querySelectorAll('.basemap-item').forEach(el => {
     el.classList.toggle('active', el.dataset.base === mode);
+    el.setAttribute('aria-pressed', String(el.dataset.base === mode));
   });
   document.getElementById('basemap-menu').classList.remove('visible');
+  document.getElementById('toolmap').setAttribute('aria-expanded', 'false');
+  document.getElementById('toolmap').focus({preventScroll:true});
 }
 
 function toggleBaseMapMenu() {
-  document.getElementById('basemap-menu').classList.toggle('visible');
+  const menu = document.getElementById('basemap-menu');
+  const visible = menu.classList.toggle('visible');
+  document.getElementById('toolmap').setAttribute('aria-expanded', String(visible));
+  if (visible) menu.querySelector('.basemap-item.active').focus();
 }
 
 // ── Tool modes ──────────────────────────────────────────────────────────────
@@ -1177,10 +1393,10 @@ function stopDrawMode() {
 function addDrawVertex(latlng) {
   drawMarkers.push([latlng.lat, latlng.lng]);  // store as [lat,lng] array (consistent with import/bbox)
   L.circleMarker(latlng, {
-    radius: 4, color: '#4d8ef7', weight: 2, fillColor: '#4d8ef7', fillOpacity: 1
+    radius: 4, color: mapColors.aoi, weight: 2, fillColor: mapColors.aoi, fillOpacity: 1
   }).addTo(drawLayer);
   if (!tempLine) {
-    tempLine = L.polyline([latlng, latlng], { color: '#4d8ef7', weight: 2, dashArray: '5,5' }).addTo(drawLayer);
+    tempLine = L.polyline([latlng, latlng], { color: mapColors.aoi, weight: 2, dashArray: '5,5' }).addTo(drawLayer);
   } else {
     tempLine.addLatLng(latlng);
   }
@@ -1208,8 +1424,9 @@ function finishDraw() {
 
 // Add a [lat,lng] ring to the confirmed AOI layer + aoiRings
 function addRingToAOI(ring) {
+  selectedGridIds = null;
   const poly = L.polygon(ring, {
-    color: '#4d8ef7', weight: 2, fillColor: '#4d8ef7', fillOpacity: 0.18
+    color: mapColors.aoi, weight: 2, fillColor: mapColors.aoi, fillOpacity: 0.18
   }).addTo(aoiLayer);
   aoiRings.push(ring);
   currentAoiGeoJSON = ringsToGeoJSON(aoiRings);
@@ -1223,6 +1440,7 @@ function clearDrawTemp() {
 }
 
 function clearAOI() {
+  selectedGridIds = null;
   stopDrawMode();
   if (aoiLayer) aoiLayer.clearLayers();
   clearDrawTemp();
@@ -1254,7 +1472,7 @@ async function importAOIFiles(input) {
     aoiSource = 'uploaded_aoi';
     aoiCrs = `${data.source_crs} → ${data.normalized_crs}`;
     commitImport(files.map(file => file.name).join(', '), data.geometry, geojsonToRings(data.geometry));
-    status.textContent = `检查通过 · ${data.feature_count} 个要素 · ${data.geometry_type} · ${aoiCrs}`;
+    status.textContent = `检查通过，${data.feature_count} 个要素，${data.geometry_type}，${aoiCrs}`;
   } catch (error) {
     clearAOI();
     status.textContent = '检查失败：' + error.message;
@@ -1387,7 +1605,8 @@ function fitToAOI() {
   const all = [];
   aoiRings.forEach(r => r.forEach(p => all.push([p[0], p[1]])));
   if (all.length === 0) return;
-  map.fitBounds(L.latLngBounds(all), { padding: [30, 30], maxZoom: 12 });
+  map.fitBounds(L.latLngBounds(all), { padding: [30, 30], maxZoom: 12,
+    animate: !matchMedia('(prefers-reduced-motion: reduce)').matches });
 }
 
 function syncInputsFromGeom() {
@@ -1416,11 +1635,12 @@ function setAOIStatus(status) {
     elements.forEach(el => { el.textContent = '尚未设置空间范围'; });
   } else if (status === 'ready') {
     const npoly = aoiRings.length;
-    elements.forEach(el => { el.textContent = '空间范围已就绪 · ' + npoly + ' 个区域 · ' + aoiCrs; });
+    elements.forEach(el => { el.textContent = '空间范围已就绪，' + npoly + ' 个区域，' + aoiCrs; });
   }
 }
 
 function activateManualBbox() {
+  selectedGridIds = null;
   if (!['drawn_polygon','imported_vector'].includes(aoiSource)) return;
   if (aoiLayer) aoiLayer.clearLayers();
   aoiRings = [];
@@ -1436,25 +1656,42 @@ function showResolvedGrids(plan) {
   resolvedGridLayer.clearLayers();
   if (!plan.grid_features || !plan.grid_features.features) return;
   L.geoJSON(plan.grid_features, {
-    style: {color:'#f1c40f',weight:2,fillColor:'#f1c40f',fillOpacity:0.08,dashArray:'6,4'},
+    style: {color:mapColors.selected,weight:2,fillColor:mapColors.selected,fillOpacity:0.08,dashArray:'6,4'},
     onEachFeature: (feature, layer) => {
       const p = feature.properties || {};
-      layer.bindPopup(`<strong>${escapeHtml(p.grid_id || '')}</strong><br>${escapeHtml(p.crs || '')}<br>10 m AEF grid`);
+      layer.bindTooltip(`${escapeHtml(p.grid_id)} / ${escapeHtml(p.crs)}，点击切换选择`);
+      layer.on('click', () => {
+        if (drawMode) return;
+        if (selectedGridIds === null) selectedGridIds = [...plan.grid_ids];
+        if (selectedGridIds.includes(p.grid_id)) selectedGridIds = selectedGridIds.filter(id => id !== p.grid_id);
+        else selectedGridIds.push(p.grid_id);
+        const chosen = selectedGridIds.includes(p.grid_id);
+        layer.setStyle({color:chosen ? mapColors.selected : mapColors.muted, fillColor:chosen ? mapColors.selected : mapColors.muted, fillOpacity:chosen ? .16 : .03});
+        document.getElementById('grid-selection-hint').textContent = `已选择 ${selectedGridIds.length} 个格网。请重新预检后下载；重置选择可再次显示全部相交格网。`;
+        document.getElementById('grid-legend-text').textContent = `已选 ${selectedGridIds.length} / ${plan.grid_count} grids，${plan.grid_crs.join(', ')}，10 m`;
+        validateForm();
+      });
     }
   }).addTo(resolvedGridLayer);
-  document.getElementById('grid-legend-text').textContent = `${plan.grid_count} grids · ${plan.grid_crs.join(', ')} · 10 m`;
+  document.getElementById('grid-legend-text').textContent = `${plan.grid_count} grids，${plan.grid_crs.join(', ')}，10 m`;
   document.getElementById('grid-legend').classList.add('visible');
+  document.getElementById('grid-selection-hint').textContent = `已选择 ${plan.grid_count} 个格网。单击格网取消或选中，修改后重新预检。`;
 }
 
 // ── Map controls ─────────────────────────────────────────────────────────────
 function flyChina() {
   if (!map) return;
-  map.setView([35, 105], 4);
+  map.setView([35, 105], 4, { animate: !matchMedia('(prefers-reduced-motion: reduce)').matches });
 }
 
 // ── Workflow ─────────────────────────────────────────────────────────────────
 function setWorkflow(wf) {
+  stopDrawMode();
   currentWorkflow = wf;
+  if (pointLayer) {
+    if (wf === 'point' && pointSourceType === 'map') pointLayer.addTo(map);
+    else pointLayer.remove();
+  }
   document.getElementById('simple-wf-grid').classList.toggle('active', wf === 'grid');
   document.getElementById('simple-wf-point').classList.toggle('active', wf === 'point');
   document.getElementById('simple-grid-options').style.display = wf === 'grid' ? '' : 'none';
@@ -1464,6 +1701,7 @@ function setWorkflow(wf) {
 }
 
 function setGridScheme(scheme) {
+  selectedGridIds = null;
   document.getElementById('grid-scheme').value = scheme;
   document.getElementById('scheme-mgrs').classList.toggle('active', scheme === 'mgrs');
   document.getElementById('scheme-tessera').classList.toggle('active', scheme === 'tessera_0p1');
@@ -1473,21 +1711,47 @@ function setGridScheme(scheme) {
 }
 
 function setPointSourceType(kind) {
+  stopDrawMode();
   pointSourceType = kind;
   const input = document.getElementById('simple-point-files');
   input.value = '';
-  input.accept = kind === 'csv' ? '.csv' : '.shp,.shx,.dbf,.prj,.cpg';
+  input.accept = kind === 'shp' ? '.shp,.shx,.dbf,.prj,.cpg' : '.csv';
   input.multiple = kind === 'shp';
   document.getElementById('point-source-csv').classList.toggle('active', kind === 'csv');
   document.getElementById('point-source-shp').classList.toggle('active', kind === 'shp');
+  document.getElementById('point-source-map').classList.toggle('active', kind === 'map');
+  document.getElementById('map-point-controls').hidden = kind !== 'map';
+  document.getElementById('point-file-picker').style.display = kind === 'map' ? 'none' : '';
+  document.getElementById('point-file-help').style.display = kind === 'map' ? 'none' : '';
+  if (pointLayer) pointLayer.clearLayers();
+  mapPoints = [];
   document.getElementById('point-file-help').textContent = kind === 'csv'
-    ? 'CSV 必须包含唯一 sample_id，以及 WGS84 的 lon、lat。'
-    : '请同时选择 .shp、.shx、.dbf 和 .prj；只接受 Point/MultiPoint，Polygon 会被拒绝。';
-  document.getElementById('point-picker-icon').textContent = kind === 'csv' ? '📄' : '📂';
+    ? 'CSV：唯一 sample_id，WGS84 经度 lon、纬度 lat。'
+    : '选择 .shp/.shx/.dbf/.prj；仅接受点几何，不接受面。';
+  document.getElementById('point-picker-icon').querySelector('use').setAttribute('href', kind === 'csv' ? '#icon-file' : '#icon-folder');
   document.getElementById('point-picker-label').textContent = kind === 'csv' ? '选择 CSV 文件' : '选择 Shapefile 组件';
   document.getElementById('point-picker-detail').textContent = '尚未选择文件';
   document.getElementById('point-file-status').textContent = '';
   validateForm();
+}
+
+function syncMapPoints() {
+  pointLayer.clearLayers();
+  pointLayer.addTo(map);
+  mapPoints.forEach(([lon, lat], index) => {
+    L.circleMarker([lat, lon], {radius:6, color:mapColors.point, fillOpacity:.8, bubblingMouseEvents:false})
+      .bindTooltip(`点 ${index + 1}：${lon.toFixed(5)}, ${lat.toFixed(5)}，点击删除`)
+      .on('click', () => {mapPoints.splice(index, 1); syncMapPoints();}).addTo(pointLayer);
+  });
+  const transfer = new DataTransfer();
+  if (mapPoints.length) {
+    const csv = 'sample_id,lon,lat\n' + mapPoints.map(([lon, lat], i) => `map_${i + 1},${lon},${lat}`).join('\n');
+    transfer.items.add(new File([csv], 'map_points.csv', {type:'text/csv'}));
+  }
+  const input = document.getElementById('simple-point-files');
+  input.files = transfer.files;
+  input.dispatchEvent(new Event('change'));
+  document.getElementById('point-file-status').textContent = `地图已选 ${mapPoints.length} 个点`;
 }
 
 function updateWorkflowFields() {
@@ -1507,13 +1771,40 @@ function validateForm() {
   let workflowReady = false;
   if (currentWorkflow === 'point') {
     const files = Array.from(document.getElementById('simple-point-files').files);
-    workflowReady = pointSourceType === 'csv'
+    workflowReady = pointSourceType !== 'shp'
       ? files.length === 1 && files[0].name.toLowerCase().endsWith('.csv')
       : files.some(file => file.name.toLowerCase().endsWith('.shp'));
   } else {
-    workflowReady = hasAOI || hasBbox;
+    workflowReady = (hasAOI || hasBbox) && (selectedGridIds === null || selectedGridIds.length > 0);
   }
-  document.getElementById('simple-btn-submit').disabled = !authReady || !project || !yearsReady || !workflowReady;
+  const checks = [
+    ['连接', Boolean(project) && authReady && (document.getElementById('portal-aef')?.checked ?? true)
+       && document.getElementById('data-source').value === 'gee',
+      !(document.getElementById('portal-aef')?.checked ?? true) ? '请选择AEF与提取方式'
+      : !project ? '请填写Earth Engine Project' : document.getElementById('auth-state').textContent],
+    [currentWorkflow === 'point' ? '文件' : '范围', workflowReady,
+      currentWorkflow === 'point' ? (pointSourceType === 'map' ? '请在地图上选择点位' : '请选择点位文件') : '请确认范围并至少选择一个格网'],
+    ['年份', yearsReady, '请选择年份'],
+    ['存储', true, '使用配置的本机输出目录'],
+  ];
+  const completed = checks.filter(([, ready]) => ready).length;
+  const percent = completed * 25;
+  const missing = checks.filter(([, ready]) => !ready).map(([, , action]) => action);
+  document.getElementById('preparation-count').textContent = `已就绪 ${completed} / 4 项`;
+  document.getElementById('preparation-percent').textContent = `${percent}%`;
+  document.getElementById('preparation-progress').value = percent;
+  document.getElementById('preparation-checks').innerHTML = checks.map(([label, ready, action]) =>
+    `<span class="${ready ? 'ready' : ''}" title="${escapeHtml(ready ? label + '已就绪' : action)}" aria-label="${label}${ready ? '已就绪' : '待完成'}"><b aria-hidden="true">${ready ? '✓' : '○'}</b>${label}</span>`).join('');
+  document.getElementById('preparation-hint').textContent = missing.length
+    ? `${missing.join('；')}。`
+    : '准备就绪，可以开始预检。';
+  document.getElementById('auth-recheck').hidden = authReady;
+  document.getElementById('simple-btn-submit').disabled = submittingTask || completed !== 4;
+  document.getElementById('simple-btn-submit').textContent = submittingTask ? '正在预检 / 提交…' : '开始下载';
+  document.getElementById('preflight-progress').hidden = !submittingTask;
+  document.getElementById('preview-grid-selection').disabled = submittingTask || !authReady || !project || !yearsReady || !(hasAOI || hasBbox);
+  document.getElementById('raster-format-field').hidden = currentWorkflow !== 'grid';
+  document.dispatchEvent(new Event('aef:form'));
 }
 
 // ── Task submission ──────────────────────────────────────────────────────────
@@ -1543,12 +1834,16 @@ function buildPayload() {
   const pointIdField = document.getElementById('point-id-field').value.trim();
   return {
     workflow: currentWorkflow,
+    dataSource: document.getElementById('data-source').value,
+    outputFormat: currentWorkflow === 'grid' ? document.getElementById('output-format').value : 'zarr',
     project,
     output,
+    outputDirectoryToken: document.getElementById('native-output-token').value,
     aoi: currentWorkflow === 'grid' ? currentAoiGeoJSON : null,
     bbox: currentWorkflow === 'grid' ? currentBbox() : null,
     years,
     gridScheme: currentWorkflow === 'grid' ? gridScheme : null,
+    selectedGridIds: currentWorkflow === 'grid' ? selectedGridIds : null,
     blockSize,
     maxRetries: Number.isFinite(maxRetries) ? maxRetries : 6,
     checkpointInterval: cpInterval,
@@ -1561,25 +1856,33 @@ function buildPayload() {
   };
 }
 
-async function submitTask() {
-  const button = document.getElementById('simple-btn-submit');
+async function submitTask({previewOnly = false, preparedPlan = null} = {}) {
   const summary = document.getElementById('simple-plan-summary');
+  const status = document.getElementById('submission-status');
   const payload = buildPayload();
-  button.disabled = true;
+  if (submittingTask) return;
+  submittingTask = true;
+  status.hidden = false;
+  status.textContent = preparedPlan ? '正在确认规划…' : '正在预检…';
+  document.getElementById('simple-plan-details').hidden = true;
+  validateForm();
   try {
-    let planResponse;
-    if (currentWorkflow === 'point') {
-      const form = new FormData();
-      form.append('payload', JSON.stringify(payload));
-      Array.from(document.getElementById('simple-point-files').files).forEach(file => form.append('samples', file));
-      planResponse = await fetch('/api/plan/points', {method:'POST', body:form});
-    } else {
-      planResponse = await fetch('/api/plan', {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
-      });
+    let plan = preparedPlan;
+    if (!plan) {
+      let planResponse;
+      if (currentWorkflow === 'point') {
+        const form = new FormData();
+        form.append('payload', JSON.stringify(payload));
+        Array.from(document.getElementById('simple-point-files').files).forEach(file => form.append('samples', file));
+        planResponse = await fetch('/api/plan/points', {method:'POST', body:form});
+      } else {
+        planResponse = await fetch('/api/plan', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+        });
+      }
+      plan = await planResponse.json();
+      if (!planResponse.ok) throw new Error(plan.error || '规划失败');
     }
-    const plan = await planResponse.json();
-    if (!planResponse.ok) throw new Error(plan.error || '规划失败');
     let details;
     if (plan.workflow === 'grid') {
       const shownIds = plan.grid_ids.slice(0, 20).join(', ') + (plan.grid_count > 20 ? ' …' : '');
@@ -1589,38 +1892,57 @@ async function submitTask() {
       crs.textContent = `AOI交换坐标：${plan.aoi_crs}\n地图显示：EPSG:3857（仅可视化）\n输出格网：${plan.grid_crs.join(', ')}\n输出分辨率：${plan.resolution_m} m`;
       crs.style.display = '';
     } else {
-      details = `点位：${plan.rows}\n文件检查：${(plan.source_geometry_types || []).join(', ')}\n特征列：${plan.feature_count}\n坐标：${plan.source_crs} → ${plan.normalized_crs}`;
+      details = `点位：${plan.rows}\n特征列：${plan.feature_count}\n文件类型：${(plan.source_geometry_types || []).join(', ')}`;
       const crs = document.getElementById('simple-crs-summary');
-      crs.textContent = `输入坐标：${plan.source_crs}\nEarth Engine采样坐标：${plan.normalized_crs}\nAEF原生像元尺度：${plan.resolution_m} m`;
+      crs.textContent = `点位坐标：WGS84 经纬度（${plan.normalized_crs}）\n输入坐标：${plan.source_crs}\n取值：所在 AEF 原生 UTM ${plan.resolution_m} m 像元；来源与像元坐标随结果保存。`;
       crs.style.display = '';
     }
-    const text = `${details}\n年份：${plan.years.join(', ')}\n未压缩数据量：${plan.raw_gib.toFixed(3)} GiB\n所需可用磁盘：${plan.disk_required_gib.toFixed(2)} GiB\n当前可用磁盘：${plan.disk_free_gib.toFixed(2)} GiB`;
+    const text = `${details}\n年份：${plan.years.join(', ')}\n特征估算（float32）：${formatBytes(plan.raw_bytes)}\n最低可用空间（含预留/临时）：${formatBytes(plan.disk_required_bytes)}\n预检时磁盘可用：${formatBytes(plan.disk_free_bytes)}`;
     summary.textContent = text + (plan.blocked_reasons.length ? '\n阻止原因：'+plan.blocked_reasons.join('; ') : '');
     summary.style.display = '';
+    document.getElementById('simple-plan-details').hidden = location.pathname === '/portal';
+    status.textContent = plan.can_start ? '预检通过，等待您确认。' : '预检未通过：' + plan.blocked_reasons.join('；');
+    if (previewOnly) {
+      document.dispatchEvent(new CustomEvent('aef:plan', {detail: plan}));
+      if (location.pathname === '/portal' && plan.can_start) status.hidden = true;
+      return;
+    }
     if (!plan.can_start) throw new Error(plan.blocked_reasons.join('; '));
     let confirmation = '';
     if (plan.strong_confirmation) {
       confirmation = window.prompt(text + `\n\n请输入以下文本确认：\n${plan.confirmation_phrase}`) || '';
-      if (confirmation !== plan.confirmation_phrase) return;
+      if (confirmation !== plan.confirmation_phrase) {
+        status.hidden = true;
+        return;
+      }
     } else if (!window.confirm(text + '\n\n确认启动下载？')) {
+      status.hidden = true;
       return;
     }
+    status.textContent = '正在提交任务到下载队列…';
     const response = await fetch('/api/tasks', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({planId:plan.plan_id, confirmation})
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '提交失败');
+    status.hidden = true;
+    status.textContent = '';
+    document.getElementById('simple-plan-details').hidden = true;
+    document.dispatchEvent(new Event('aef:submitted'));
     loadTasks();
   } catch (error) {
+    status.hidden = false;
+    status.textContent = '预检或提交失败：' + error.message;
     alert('提交失败：' + error.message);
   } finally {
+    submittingTask = false;
     validateForm();
   }
 }
 
 function loadTasks() {
-  fetch('/api/tasks')
+  return fetch('/api/tasks')
     .then(async r => r.ok ? r.json() : [])
     .then(data => {
       tasks = data;
@@ -1674,12 +1996,15 @@ function subscribeTask(runId) {
   es.addEventListener('progress', (ev) => {
     let event = {};
     try { event = JSON.parse(ev.data); } catch (_) {}
+    const task = tasks.find(item => item.run_id === runId);
+    if (task) task.progress_detail = event;
+    document.dispatchEvent(new Event('aef:tasks'));
     taskLogOffsets[runId] = parseInt(ev.lastEventId) || taskLogOffsets[runId] || 0;
     if (typeof event.overall_progress === 'number') updateTaskProgress(runId, event.overall_progress);
-    const txt = document.getElementById('progtext-' + runId);
+    const txt = document.getElementById('progtext-' + runId)?.querySelector('.task-progress-label');
     if (txt && event.grid_id) {
-      const eta = typeof event.eta_seconds === 'number' ? ` · 当前格网 ETA ${(event.eta_seconds/60).toFixed(1)} min` : '';
-      txt.textContent += ` · ${event.grid_id}${eta}`;
+      const eta = typeof event.eta_seconds === 'number' ? `，当前格网 ETA ${(event.eta_seconds/60).toFixed(1)} min` : '';
+      txt.textContent += `，${event.grid_id}${eta}`;
     }
   });
   es.addEventListener('eof', () => {
@@ -1694,8 +2019,11 @@ function subscribeTask(runId) {
 }
 
 function updateTaskProgress(runId, frac) {
+  const task = tasks.find(item => item.run_id === runId);
+  if (task) task.progress = frac;
+  document.dispatchEvent(new Event('aef:tasks'));
   const bar = document.getElementById('prog-' + runId);
-  const txt = document.getElementById('progtext-' + runId);
+  const txt = document.getElementById('progtext-' + runId)?.querySelector('.task-progress-label');
   if (bar) {
     bar.classList.remove('indeterminate');
     bar.style.width = Math.round(frac * 100) + '%';
@@ -1703,12 +2031,28 @@ function updateTaskProgress(runId, frac) {
   if (txt) txt.textContent = '进度 ' + Math.round(frac * 100) + '%';
 }
 
+function rememberTaskFocus(container) {
+  const active = document.activeElement;
+  return container.contains(active) && active.matches('[data-run][data-action]')
+    ? {run: active.dataset.run, action: active.dataset.action} : null;
+}
+
+function restoreTaskFocus(container, previous) {
+  if (!previous) return;
+  const button = Array.from(container.querySelectorAll('[data-run][data-action]'))
+    .find(el => el.dataset.run === previous.run && el.dataset.action === previous.action);
+  (button || container).focus({preventScroll:true});
+}
+
 function renderTasks() {
+  document.dispatchEvent(new Event('aef:tasks'));
   const body = document.getElementById('task-panel-body');
+  const focusedAction = rememberTaskFocus(body);
   const empty = document.getElementById('task-empty');
   if (tasks.length === 0) {
     empty.style.display = '';
     body.querySelectorAll('.task-card').forEach(c => c.remove());
+    restoreTaskFocus(body, focusedAction);
     return;
   }
   empty.style.display = 'none';
@@ -1716,10 +2060,10 @@ function renderTasks() {
   tasks.forEach(t => {
     const frac = typeof t.progress === 'number' ? t.progress : null;
     const detail = t.progress_detail || {};
-    const queueText = t.status === 'queued' && t.queue_position ? ` · 队列第 ${t.queue_position} 位` : '';
-    const stageText = t.stage ? ` · 阶段 ${t.stage}` : '';
-    const gridText = detail.grid_id ? ` · ${detail.grid_id}` : '';
-    const etaText = typeof detail.eta_seconds === 'number' ? ` · 当前格网 ETA ${(detail.eta_seconds / 60).toFixed(1)} min` : '';
+    const queueText = t.status === 'queued' && t.queue_position ? `，队列第 ${t.queue_position} 位` : '';
+    const stageText = t.stage ? `，阶段 ${t.stage}` : '';
+    const gridText = detail.grid_id ? `，${detail.grid_id}` : '';
+    const etaText = typeof detail.eta_seconds === 'number' ? `，当前格网 ETA ${(detail.eta_seconds / 60).toFixed(1)} min` : '';
     const years = Array.isArray(t.years) && t.years.length ? t.years.join(', ') : '—';
     const gridIds = Array.isArray(t.grid_ids) ? t.grid_ids : [];
     const target = t.workflow === 'points' ? '点位 AEF 特征' : `${t.grid_scheme === 'mgrs' ? 'MGRS' : 'Tessera 0.1°'} AEF 格网`;
@@ -1733,6 +2077,8 @@ function renderTasks() {
     }
     const outputText = t.output_dir ? `<div class="task-card-meta task-card-path" title="${escapeHtml(t.output_dir)}"><strong>存储：</strong>${escapeHtml(t.output_dir)}</div>` : '';
     const progressText = frac!=null ? `进度 ${Math.round(frac*100)}%` : (t.status==='running' ? '运行中…' : '');
+    const estimatedBytes = t.raw_bytes ?? (Number.isFinite(t.raw_gib) ? t.raw_gib * 1024 ** 3 : null);
+    const sizeText = Number.isFinite(estimatedBytes) ? `<span title="float32 特征估算，不是实际文件大小">预计 ${formatBytes(estimatedBytes)}</span>` : '';
     const validationText = t.validation
       ? `<span class="task-validation ${t.validation.valid ? 'ok' : 'failed'}">产物验证：${t.validation.valid ? '通过' : '失败'}${(t.validation.warnings || []).length ? ` · ${t.validation.warnings.length} 个警告` : ''}</span>`
       : '';
@@ -1741,7 +2087,7 @@ function renderTasks() {
       ? (resources.memory_reservation_bytes / (1024 ** 3)).toFixed(2)
       : null;
     const resourceText = reservationGiB
-      ? `<div class="task-card-meta"><strong>资源：</strong>${reservationGiB} GiB · ${escapeHtml(resources.profile || 'auto')} · 请求上限 ${resources.global_request_limit || '—'} · 重试 ${resources.request_retries || 0}</div>`
+      ? `<div class="task-card-meta"><strong>资源：</strong>${reservationGiB} GiB，${escapeHtml(resources.profile || 'auto')}，请求上限 ${resources.global_request_limit || '—'}，重试 ${resources.request_retries || 0}</div>`
       : '';
     const card = document.createElement('div');
     card.className = 'task-card';
@@ -1756,20 +2102,22 @@ function renderTasks() {
       ${outputText}
       ${resourceText}
       <div class="task-progress"><div class="task-progress-bar ${frac==null && t.status==='running' ? 'indeterminate' : ''}" id="prog-${t.run_id}" style="${frac!=null ? 'width:'+Math.round(frac*100)+'%' : ''}"></div></div>
-      <div class="task-progress-text" id="progtext-${t.run_id}"><span>${progressText}</span>${validationText}</div>
+      <div class="task-progress-text" id="progtext-${t.run_id}"><span class="task-progress-label">${progressText}</span>${sizeText}${validationText}</div>
       <div class="task-card-log ${openLogs.has(t.run_id) ? 'shown' : ''}" id="log-${t.run_id}">${escapeHtml((taskLogs[t.run_id] || []).join('\n'))}</div>
       <div class="task-card-actions">
-        <button class="task-action-btn" onclick="toggleLog('${t.run_id}')">日志</button>
-        <button class="task-action-btn" title="打开完整日志" onclick="window.open('/api/tasks/${t.run_id}/logfile','_blank')">完整</button>
-        ${t.output_dir ? '<button class="task-action-btn" title="复制完整输出路径" onclick="copyOutputPath(\'' + t.run_id + '\')">路径</button>' : ''}
-        ${t.status === 'done' ? '<button class="task-action-btn" onclick="showResults(\'' + t.run_id + '\')">结果</button>' : ''}
-        ${['queued','running','cancelling'].includes(t.status) ? '<button class="task-action-btn danger" onclick="cancelTask(\'' + t.run_id + '\')">取消</button>' : ''}
-        ${t.status === 'auth_required' ? '<button class="task-action-btn" onclick="resumeTask(\'' + t.run_id + '\')">重新认证后续传</button>' : ''}
-        ${['done','failed','error','cancelled','interrupted','auth_required'].includes(t.status) ? '<button class="task-action-btn danger" onclick="deleteTask(\'' + t.run_id + '\')">隐藏</button>' : ''}
+        <button class="task-action-btn" data-action="log" onclick="toggleLog('${t.run_id}')">日志</button>
+        <button class="task-action-btn" data-action="full" title="打开完整日志" onclick="window.open('/api/tasks/${t.run_id}/logfile','_blank')">完整</button>
+        ${t.output_dir ? '<button class="task-action-btn" data-action="path" title="复制完整输出路径" onclick="copyOutputPath(\'' + t.run_id + '\')">路径</button>' : ''}
+        ${t.status === 'done' ? '<button class="task-action-btn" data-action="results" onclick="showResults(\'' + t.run_id + '\')">结果</button>' : ''}
+        ${['queued','running','cancelling'].includes(t.status) ? '<button class="task-action-btn danger" data-action="cancel" onclick="cancelTask(\'' + t.run_id + '\')">取消</button>' : ''}
+        ${t.status === 'auth_required' ? '<button class="task-action-btn" data-action="resume" onclick="resumeTask(\'' + t.run_id + '\')">重新认证后续传</button>' : ''}
+        ${['done','failed','error','cancelled','interrupted','auth_required'].includes(t.status) ? '<button class="task-action-btn danger" data-action="hide" onclick="deleteTask(\'' + t.run_id + '\')">隐藏</button>' : ''}
       </div>
     `;
+    card.querySelectorAll('[data-action]').forEach(button => { button.dataset.run = t.run_id; });
     body.appendChild(card);
   });
+  restoreTaskFocus(body, focusedAction);
 }
 
 function taskStatusLabel(status) {
@@ -1790,7 +2138,20 @@ async function resumeTask(runId) {
 }
 
 function scrollTaskDock(direction) {
-  document.getElementById('task-panel-body').scrollBy({left: direction * 400, behavior:'smooth'});
+  document.getElementById('task-panel-body').scrollBy({left: direction * 400,
+    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+}
+
+function setPanelCollapsed(panelId, collapsed) {
+  const panel = document.getElementById(panelId);
+  const toggle = panel.querySelector('.panel-toggle');
+  const content = document.getElementById(toggle.getAttribute('aria-controls'));
+  if (collapsed && content.contains(document.activeElement)) toggle.focus({preventScroll:true});
+  content.hidden = collapsed;
+  panel.classList.toggle('is-collapsed', collapsed);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  toggle.textContent = collapsed ? '展开' : '收起';
+  if (map) map.invalidateSize({pan:false});
 }
 
 function toggleLog(runId) {
@@ -1827,18 +2188,33 @@ async function copyOutputPath(runId) {
   }
 }
 
+function openModal(id, opener = document.activeElement) {
+  const dialog = document.getElementById(id);
+  dialog.onclose = () => {
+    dialog.classList.remove('visible');
+    if (opener.isConnected) opener.focus({preventScroll:true});
+    else if (opener.dataset.run) {
+      const container = document.getElementById(location.pathname === '/portal' ? 'portal-task-rows' : 'task-panel-body');
+      restoreTaskFocus(container, opener.dataset);
+    }
+  };
+  dialog.classList.add('visible');
+  dialog.showModal();
+}
+
 async function showResults(runId) {
+  const opener = document.activeElement;
   try {
     const response = await fetch('/api/tasks/' + runId + '/results');
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '结果不可用');
     document.getElementById('result-content').textContent = JSON.stringify(data, null, 2);
-    document.getElementById('result-modal').classList.add('visible');
+    openModal('result-modal', opener);
   } catch (error) { alert(error.message); }
 }
 
 function closeResults() {
-  document.getElementById('result-modal').classList.remove('visible');
+  document.getElementById('result-modal').close();
 }
 
 function escapeHtml(s) {
@@ -1850,15 +2226,56 @@ function shortPath(value) {
   return parts.slice(-2).join('/');
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '—';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const unit = bytes > 0 ? Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1) : 0;
+  return `${Number((bytes / 1024 ** unit).toFixed(2))} ${units[unit]}`;
+}
+
+function showOutputLocation(path) {
+  document.getElementById('output-root-hint').textContent = path;
+  document.getElementById('output-picker-detail').title = path;
+  document.getElementById('output-folder-status').hidden = true;
+}
+
 // ── Server-side output folder browser ───────────────────────────────────────
-async function openOutputBrowser() {
-  document.getElementById('directory-modal').classList.add('visible');
+async function openOutputBrowser(useWebBrowser = false) {
+  if (webAuthMode === 'local' && !useWebBrowser) {
+    const button = document.getElementById('output-directory-picker');
+    const status = document.getElementById('output-folder-status');
+    button.disabled = true;
+    status.hidden = false;
+    status.textContent = '请选择文件夹…';
+    try {
+      const response = await fetch('/api/output-directories/pick', {method:'POST'});
+      if (response.status === 404) throw new Error('本机服务版本较旧，请先停止并重新运行 aef-grits-web，再刷新页面');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '系统文件夹窗口不可用');
+      if (data.cancelled) {
+        status.hidden = true;
+        status.textContent = '';
+        return;
+      }
+      document.getElementById('native-output-token').value = data.token;
+      const input = document.getElementById('simple-output');
+      input.value = '';
+      showOutputLocation(data.path);
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+    } catch (error) {
+      status.hidden = false;
+      document.getElementById('output-location-options').open = true;
+      status.textContent = '无法打开系统选择窗口：' + error.message + '。可点击“网页内选择子目录”。';
+    } finally { button.disabled = false; }
+    return;
+  }
+  openModal('directory-modal');
   const selected = document.getElementById('simple-output').value.trim();
   await browseOutputDirectory(selected);
 }
 
 function closeOutputBrowser() {
-  document.getElementById('directory-modal').classList.remove('visible');
+  document.getElementById('directory-modal').close();
 }
 
 async function browseOutputDirectory(path = '') {
@@ -1881,7 +2298,7 @@ async function browseOutputDirectory(path = '') {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'directory-item';
-        button.innerHTML = '<span>📁</span><span></span>';
+        button.innerHTML = '<span><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"/></svg></span><span></span>';
         button.lastElementChild.textContent = item.name;
         button.addEventListener('click', () => browseOutputDirectory(item.path));
         list.appendChild(button);
@@ -1894,18 +2311,24 @@ async function browseOutputDirectory(path = '') {
 }
 
 function selectCurrentOutputDirectory() {
+  document.getElementById('native-output-token').value = '';
   const input = document.getElementById('simple-output');
   input.value = outputBrowserPath;
-  document.getElementById('output-picker-detail').textContent = outputBrowserPath || '输出根目录下自动命名';
+  showOutputLocation(configuredOutputRoot + (outputBrowserPath ? '/' + outputBrowserPath : ''));
+  document.getElementById('output-location-options').open = false;
   input.dispatchEvent(new Event('input'));
   closeOutputBrowser();
+  document.getElementById('output-directory-picker').focus({preventScroll:true});
 }
 
 function clearOutputDirectory() {
+  document.getElementById('native-output-token').value = '';
   const input = document.getElementById('simple-output');
   input.value = '';
-  document.getElementById('output-picker-detail').textContent = '未指定，任务将自动命名';
+  showOutputLocation(configuredOutputRoot);
+  document.getElementById('output-location-options').open = false;
   input.dispatchEvent(new Event('input'));
+  document.getElementById('output-directory-picker').focus({preventScroll:true});
 }
 
 async function createOutputFolder() {
@@ -1937,8 +2360,9 @@ async function loadCapabilities() {
       validateForm();
     }
     if (data.output_root) {
+      configuredOutputRoot = data.output_root;
       document.getElementById('simple-output').title = '输出根目录：' + data.output_root;
-      document.getElementById('output-root-hint').textContent = '保存位置：' + data.output_root + '；下载前会检查磁盘空间。';
+      showOutputLocation(data.output_root);
     }
   } catch (_) { /* built-in supported years remain available offline */ }
 }
@@ -1949,17 +2373,30 @@ async function loadAuthStatus() {
   const logout = document.getElementById('auth-logout');
   try {
     const response = await fetch('/api/auth/status');
+    if (!response.ok) throw new Error('认证状态请求失败');
     const data = await response.json();
+    webAuthMode = data.mode;
+    document.getElementById('output-picker-label').textContent = data.mode === 'local' ? '选择本地文件夹' : '选择存储子目录';
+    document.getElementById('output-directory-picker').title = data.mode === 'local' ? '每个任务在所选位置建立子目录' : '选择运行 Python 的服务器目录，不是访问者电脑的目录';
     authReady = Boolean(data.authenticated);
     if (data.mode === 'local') {
-      state.textContent = '本地凭据模式';
+      authReady = false;
+      document.getElementById('auth-help').textContent = '凭据不上传官网；无需在此填写 Google 密码。';
+      document.getElementById('auth-step-login').hidden = true;
+      document.getElementById('local-auth-controls').hidden = false;
+      state.textContent = '本机连接待验证';
       login.style.display = 'none';
       logout.style.display = 'none';
+      await refreshLocalAuth();
     } else if (data.authenticated) {
+      document.getElementById('auth-help').textContent = '已登录，请填写有权使用的 Project ID。';
+      document.getElementById('auth-step-login').hidden = true;
       state.textContent = data.email ? `已登录：${data.email}` : 'Earth Engine 已登录';
       login.style.display = 'none';
       logout.style.display = '';
     } else {
+      document.getElementById('auth-help').textContent = '请在 Google 官方页面授权；本站不收集密码。';
+      document.getElementById('auth-step-login').hidden = false;
       state.textContent = '尚未登录 Earth Engine';
       login.style.display = '';
       logout.style.display = 'none';
@@ -1969,6 +2406,78 @@ async function loadAuthStatus() {
     state.textContent = '无法检查认证状态';
   }
   validateForm();
+}
+
+function changeDataSource() {
+  const isPublic = document.getElementById('data-source').value === 'public';
+  document.getElementById('public-source-controls').hidden = !isPublic;
+  document.getElementById('project-field').hidden = isPublic;
+  document.getElementById('local-auth-controls').hidden = isPublic || webAuthMode !== 'local';
+  if (isPublic) {
+    authReady = false;
+    document.getElementById('auth-state').textContent = '公开源仅可检查连接，GUI提取尚未开放';
+    validateForm();
+  } else loadAuthStatus();
+}
+
+async function refreshLocalAuth() {
+  const project = document.getElementById('project').value.trim();
+  const response = await fetch('/api/local-auth/status', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({project})});
+  if (!response.ok) throw new Error('无法读取本机认证状态');
+  const data = await response.json();
+  if (project !== document.getElementById('project').value.trim()) return;
+  authReady = Boolean(data.verified) && document.getElementById('data-source').value === 'gee';
+  const text = data.state === 'running' ? '正在' + ({login:'等待Google授权',verify:'验证Project与AEF',status:'检测凭据'}[data.action] || '处理认证') + '…'
+    : data.error || (authReady ? 'Project与AEF访问已验证' : data.action === 'login' && data.state === 'done'
+      ? '授权已保存到本机，请点击“验证连接”' : data.candidates
+      ? (data.candidates.some(c => c.available) ? '已找到本机凭据，请验证连接。' : '未找到本机凭据，请点击“Google 授权”。')
+      : data.state === 'cancelled' ? '已取消认证等待' : '本机连接待验证');
+  document.getElementById('local-auth-result').textContent = text;
+  if (document.getElementById('data-source').value === 'gee') document.getElementById('auth-state').textContent = text;
+  document.getElementById('local-auth-cancel').hidden = data.state !== 'running';
+  clearTimeout(localAuthTimer);
+  if (data.state === 'running') localAuthTimer = setTimeout(() => refreshLocalAuth().catch(showLocalAuthError), 1000);
+  validateForm();
+}
+
+function showLocalAuthError(error) {
+  authReady = false;
+  document.getElementById('local-auth-result').textContent = error.message;
+  document.getElementById('auth-state').textContent = error.message;
+  validateForm();
+}
+
+async function startLocalAuth(action) {
+  try {
+    if (action === 'login') document.dispatchEvent(new Event('aef:auth-change'));
+    const response = await fetch('/api/local-auth/start', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action, project:document.getElementById('project').value.trim()})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '无法启动认证');
+    await refreshLocalAuth();
+  } catch (error) { showLocalAuthError(error); }
+}
+
+async function cancelLocalAuth() {
+  try {
+    await fetch('/api/local-auth/cancel', {method:'POST'});
+    await refreshLocalAuth();
+  } catch (error) { showLocalAuthError(error); }
+}
+
+async function probePublicSource() {
+  const button = document.getElementById('public-source-probe');
+  button.disabled = true;
+  document.getElementById('public-source-result').textContent = '正在做小范围匿名连接检查，不下载影像…';
+  try {
+    const response = await fetch('/api/public-source/probe', {method:'POST'});
+    const data = await response.json();
+    document.getElementById('public-source-result').textContent = data.reachable
+      ? '匿名Range连接通过。索引获取与GUI下载尚未贯通，请使用GEE路线。'
+      : data.error || '连接未通过，请检查网络。';
+  } catch (_) { document.getElementById('public-source-result').textContent = '连接检查失败，请检查本机服务与网络。'; }
+  finally { button.disabled = false; }
 }
 
 async function logoutAuth() {
@@ -1985,6 +2494,13 @@ async function logoutAuth() {
   initMap();
 
   document.getElementById('project').value = '';
+  document.getElementById('project').addEventListener('input', () => {
+    if (webAuthMode === 'local') {
+      authReady = false;
+      refreshLocalAuth().catch(showLocalAuthError);
+    }
+    validateForm();
+  });
   setGridScheme('mgrs');
   setPointSourceType('csv');
   document.getElementById('simple-output').addEventListener('input', validateForm);
@@ -2005,8 +2521,17 @@ async function logoutAuth() {
   document.addEventListener('click', (e) => {
     const menu = document.getElementById('basemap-menu');
     const btn = document.getElementById('toolmap');
-    if (menu.classList.contains('visible') && !menu.contains(e.target) && e.target !== btn) {
+    if (menu.classList.contains('visible') && !menu.contains(e.target) && !btn.contains(e.target)) {
       menu.classList.remove('visible');
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  });
+  document.getElementById('basemap-menu').addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      document.getElementById('basemap-menu').classList.remove('visible');
+      document.getElementById('toolmap').setAttribute('aria-expanded', 'false');
+      document.getElementById('toolmap').focus();
     }
   });
 
@@ -2015,5 +2540,6 @@ async function logoutAuth() {
   setInterval(loadTasks, 10000);
 })();
 </script>
+<script src="/static/portal.js"></script>
 </body>
 </html>

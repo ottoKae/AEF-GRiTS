@@ -36,6 +36,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+if __name__ == "__main__":
+    from webapp.launcher import main
+    raise SystemExit(main())
+
 from aef_grits.earth_engine import AEF_FIRST_YEAR, AEF_LAST_YEAR, DATASET
 from aef_grits.atomic import write_json, write_text
 from aef_grits.resources import BUILTIN_MGRS_INDEX
@@ -56,14 +60,17 @@ from aef_grits.storage_safety import (
     validate_storage_layout,
 )
 from webapp.auth import AuthBinding, WebAuth
+from webapp.paths import default_output_root, default_state_dir
+from webapp.local_auth import LocalAuthRunner
+from webapp.folder_picker import pick_directory
 
 
 APP_DIR = Path(__file__).resolve().parent
 RUNS_DIR = Path(
-    os.environ.get("AEF_GRITS_WEB_STATE", str(APP_DIR / "runs"))
+    os.environ.get("AEF_GRITS_WEB_STATE", str(default_state_dir()))
 ).expanduser().absolute()
 OUTPUT_ROOT = Path(
-    os.environ.get("AEF_GRITS_WEB_OUTPUT", str(APP_DIR / "output"))
+    os.environ.get("AEF_GRITS_WEB_OUTPUT", str(default_output_root()))
 ).expanduser().absolute()
 STAGING_ROOT = (
     Path(os.environ["AEF_GRITS_WEB_STAGING"]).expanduser().absolute()
@@ -123,26 +130,7 @@ PLANS_DIR = RUNS_DIR / "plans"
 PLANS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _detect_python() -> str:
-    """Use the current interpreter when possible, otherwise one with Earth Engine."""
-    candidates = [sys.executable]
-    candidates.extend(filter(None, (shutil.which("python"), shutil.which("python3"))))
-    for candidate in dict.fromkeys(candidates):
-        try:
-            result = subprocess.run(
-                [candidate, "-c", "import ee"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            if result.returncode == 0:
-                return candidate
-        except (OSError, subprocess.SubprocessError):
-            continue
-    return sys.executable
-
-
-PYTHON_BIN = _detect_python()
+PYTHON_BIN = sys.executable
 
 
 def _plan_secret() -> str:
@@ -173,6 +161,8 @@ def _session_secret() -> str:
 
 
 _web_auth = WebAuth()
+_local_auth = LocalAuthRunner()
+_local_auth_epoch = secrets.token_hex(16)
 _trusted_hosts = [
     value.strip()
     for value in os.environ.get(
@@ -346,7 +336,11 @@ def _public_task(run_id_value: str, task: dict[str, Any]) -> dict[str, Any]:
         "source_name": plan.get("source_name"),
         "source_crs": plan.get("source_crs"),
         "grid_crs": plan.get("grid_crs", []),
+        "raw_bytes": plan.get("raw_bytes"),
         "raw_gib": plan.get("raw_gib"),
+        "disk_required_bytes": plan.get("disk_required_bytes"),
+        "disk_free_bytes": plan.get("disk_free_bytes"),
+        "output_format": params.get("output_format", "zarr"),
         "output_dir": str(task.get("output_dir", "")),
         "download_state_dir": str(task.get("download_state_dir", "")),
         "staging_dir": str(task.get("staging_dir", "")) if task.get("staging_dir") else "",
@@ -680,6 +674,13 @@ def _grid_specs(params: dict[str, Any]) -> tuple[list[Any], list[dict[str, Any]]
             f"AOI intersects {len(specs)} grids, exceeding the local safety limit "
             f"of {MAX_GRID_COUNT}; reduce the AOI or raise AEF_GRITS_WEB_MAX_GRIDS"
         )
+    selected = params.get("selected_grid_ids")
+    if selected is not None:
+        available = {item["grid_id"] for item in selections}
+        if not set(selected) <= available:
+            raise ValueError("Selected grids must intersect the current AOI")
+        pairs = [(spec, item) for spec, item in zip(specs, selections) if item["grid_id"] in selected]
+        specs, selections = map(list, zip(*pairs))
     return specs, selections
 
 
@@ -689,11 +690,19 @@ def _normalize_params(body: dict[str, Any]) -> dict[str, Any]:
         workflow = "points"
     if workflow not in {"grid", "points"}:
         raise ValueError("workflow must be grid or points")
+    if body.get("dataSource", "gee") != "gee":
+        raise ValueError("Public COG extraction is experimental and not yet available in the GUI")
     project = str(body.get("project", "")).strip()
     if not project:
         raise ValueError("Google Earth Engine project is required")
+    output_format = str(body.get("outputFormat", "zarr")).strip()
+    if output_format not in {"zarr", "zarr+geotiff", "geotiff"}:
+        raise ValueError("Unknown raster output format")
+    if workflow == "points" and output_format != "zarr":
+        raise ValueError("Point outputs use Parquet, not GeoTIFF")
     params = {
         "project": project,
+        "output_format": output_format,
         "workflow": workflow,
         "years": _normalize_years(body.get("years", [])),
         "bbox": _normalize_bbox(body.get("bbox")),
@@ -725,6 +734,27 @@ def _normalize_params(body: dict[str, Any]) -> dict[str, Any]:
         "reference_grid": str(body.get("referenceGrid") or body.get("reference_grid") or "").strip(),
         "max_points": _as_int(body.get("maxPoints") or body.get("max_points"), "max_points", 1_000_000, 1, 10_000_000),
     }
+    directory_token = body.get("outputDirectoryToken")
+    if directory_token:
+        if _web_auth.mode != "local":
+            raise ValueError("Native folder selection is only available in local mode")
+        try:
+            selection = _plan_serializer.loads(directory_token, max_age=PLAN_TTL_SECONDS)
+        except (BadSignature, TypeError) as exc:
+            raise ValueError("Folder selection expired or is invalid; choose the folder again") from exc
+        if selection.get("kind") != "local-directory":
+            raise ValueError("Invalid folder selection")
+        params["output_root"] = selection["path"]
+    output_mount = mount_for_path(params.get("output_root") or _owner_output_root())
+    if output_format != "zarr" and output_mount and output_mount.is_linux_ntfs:
+        raise ValueError("GeoTIFF export requires a native Linux output filesystem, not NTFS")
+    selected = body.get("selectedGridIds")
+    if selected is not None:
+        if not isinstance(selected, list) or not selected or not all(isinstance(item, str) for item in selected):
+            raise ValueError("Select at least one grid; selectedGridIds must be a list of IDs")
+        if workflow != "grid" or params["grid_scheme"] == "reference":
+            raise ValueError("Grid selection is only available for MGRS or Tessera grids")
+        params["selected_grid_ids"] = selected
     if params["workflow"] == "grid":
         if params["grid_scheme"] not in {"mgrs", "tessera_0p1", "reference"}:
             raise ValueError("Unknown grid scheme")
@@ -782,14 +812,15 @@ def _plan_grid(params: dict[str, Any]) -> dict[str, Any]:
         "years": params["years"],
         "raw_bytes": raw_bytes,
         "raw_gib": raw_bytes / 1024**3,
+        "output_format": params.get("output_format", "zarr"),
         "note": "Storage after lossless compression depends on local feature entropy.",
         "resource_plan": resources.as_dict(),
         "memory": WEB_MEMORY_SNAPSHOT.as_dict(),
     }
 
 
-def _safe_output_dir(name: str, rid: str) -> Path:
-    root = _owner_output_root()
+def _safe_output_dir(name: str, rid: str, *, selected_root: str | None = None) -> Path:
+    root = Path(selected_root) if selected_root else _owner_output_root()
     if not name:
         return root / rid
     candidate = Path(name)
@@ -835,6 +866,8 @@ def _package_version(name: str) -> str | None:
 
 def _provenance() -> dict[str, Any]:
     try:
+        if not (ROOT / ".git").exists():
+            raise FileNotFoundError("Installed package has no Git working tree")
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=5, check=True
         ).stdout.strip()
@@ -868,15 +901,18 @@ def _provenance() -> dict[str, Any]:
 
 def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
     raw_bytes = int(plan.get("raw_bytes", 0))
-    disk_required = int(raw_bytes * DISK_FACTOR) + DISK_RESERVE_BYTES
-    validate_storage_layout(OUTPUT_ROOT, RUNS_DIR, STAGING_ROOT)
+    export_bytes = raw_bytes if plan.get("output_format") in {"zarr+geotiff", "geotiff"} else 0
+    disk_required = int(raw_bytes * DISK_FACTOR) + export_bytes + DISK_RESERVE_BYTES
+    output_root = Path(plan.get("output_root") or OUTPUT_ROOT)
+    staging_root = None if plan.get("output_format") == "geotiff" else STAGING_ROOT
+    layout = validate_storage_layout(output_root, RUNS_DIR, staging_root)
     incident = RUNS_DIR / "filesystem_incident.json"
     free_bytes = isolated_disk_free(
-        OUTPUT_ROOT, timeout_seconds=10, incident_path=incident
+        output_root, timeout_seconds=10, incident_path=incident
     )
     staging_free = (
-        isolated_disk_free(STAGING_ROOT, timeout_seconds=10, incident_path=incident)
-        if STAGING_ROOT is not None
+        isolated_disk_free(staging_root, timeout_seconds=10, incident_path=incident)
+        if staging_root is not None
         else free_bytes
     )
     blocked_reasons = []
@@ -890,7 +926,7 @@ def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
             f"Free disk {free_bytes / 1024**3:.2f} GiB is below the required "
             f"{disk_required / 1024**3:.2f} GiB"
         )
-    if STAGING_ROOT is not None:
+    if staging_root is not None:
         per_grid_raw = max(
             (
                 int(grid.get("width", 0))
@@ -922,7 +958,7 @@ def _capacity_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "staging_free_gib": staging_free / 1024**3,
         "staging_required_bytes": staging_required,
         "staging_required_gib": staging_required / 1024**3,
-        "storage_layout": STORAGE_LAYOUT.as_dict(),
+        "storage_layout": layout.as_dict(),
         "hard_limit_bytes": MAX_RAW_BYTES,
         "hard_limit_gib": MAX_RAW_BYTES / 1024**3,
         "can_start": not blocked_reasons,
@@ -942,7 +978,7 @@ def _write_plan(
     plan_dir = plan_dir or (PLANS_DIR / uuid.uuid4().hex)
     plan_dir.mkdir(parents=True, exist_ok=True)
     plan_id_value = plan_dir.name
-    enriched = _capacity_plan(plan)
+    enriched = _capacity_plan({**plan, "output_root": params.get("output_root") or str(_owner_output_root())})
     binding = auth_binding or _web_auth.current_binding(
         session, params["project"], verify=False
     )
@@ -954,6 +990,7 @@ def _write_plan(
         "plan": enriched,
         "owner_hash": binding.owner_hash,
         "auth_binding": binding.as_dict(),
+        "local_auth_epoch": _local_auth_epoch if _web_auth.mode == "local" else None,
     }
     digest = _json_digest(record)
     record["digest"] = digest
@@ -984,6 +1021,8 @@ def _read_plan(token: str, confirmation: str = "") -> tuple[Path, dict[str, Any]
     if digest != signed.get("digest") or digest != _json_digest(record):
         raise ValueError("Plan state signature mismatch")
     record["digest"] = digest
+    if _web_auth.mode == "local" and record.get("local_auth_epoch") != _local_auth_epoch:
+        raise ValueError("Local authentication or service changed; run preflight again")
     capacity = _capacity_plan(record["plan"])
     if not capacity["can_start"]:
         raise ValueError("; ".join(capacity["blocked_reasons"]))
@@ -1025,7 +1064,7 @@ def _build_cmd(
     if params["workflow"] == "grid":
         cmd = [
             PYTHON_BIN,
-            str(ROOT / "scripts" / "stream_aef_grid_ee.py"),
+            "-m", "scripts.stream_aef_grid_ee",
             "--grid-scheme",
             params["grid_scheme"],
             "--auth-source",
@@ -1051,6 +1090,10 @@ def _build_cmd(
             "--checkpoint-every",
             str(params["checkpoint_every"]),
         ]
+        if params.get("output_format") == "zarr+geotiff":
+            cmd.append("--export-geotiff")
+        elif params.get("output_format") == "geotiff":
+            cmd.append("--geotiff-only")
         if params["grid_scheme"] == "mgrs":
             cmd.extend(["--tiles", *params["grid_ids"]])
         elif params["grid_scheme"] == "tessera_0p1":
@@ -1066,7 +1109,7 @@ def _build_cmd(
 
     cmd = [
         PYTHON_BIN,
-        str(ROOT / "scripts" / "stream_aef_points_ee.py"),
+        "-m", "scripts.stream_aef_points_ee",
         "--samples",
         params["samples_path"],
         "--auth-source",
@@ -1127,6 +1170,8 @@ def _update_progress(rid: str, line: str) -> None:
                     task["request_timeouts"] = int(task.get("request_timeouts", 0)) + 1
                 elif event.get("event") == "auth_required":
                     task["auth_failure"] = True
+                elif event.get("event") in {"geotiff_start", "geotiff_complete"}:
+                    task["stage"] = "writing_geotiff"
                 grid_ids = task.get("params", {}).get("grid_ids", [])
                 grid_id = event.get("grid_id")
                 if event.get("event") == "grid_start" and grid_id:
@@ -1188,6 +1233,13 @@ def _update_progress(rid: str, line: str) -> None:
 
 def _validate_task_outputs_in_process(task: dict[str, Any]) -> dict[str, Any]:
     """Validate lightweight structural invariants without loading raster values."""
+    if task["params"].get("output_format") == "geotiff":
+        from aef_grits.delivery_validation import validate_delivery
+        return validate_delivery({
+            "output_dir": str(task["output_dir"]),
+            "control_dir": str(task.get("download_state_dir") or task["output_dir"]),
+            "params": task["params"],
+        })
     import pandas as pd
 
     output_dir = Path(task["output_dir"]).resolve()
@@ -1292,6 +1344,10 @@ def _validate_task_outputs_in_process(task: dict[str, Any]) -> dict[str, Any]:
                     "report": str(report_path),
                 }
             )
+    if params.get("output_format") == "zarr+geotiff":
+        from aef_grits.geotiff import validate_geotiffs
+        errors.extend(validate_geotiffs(output_dir, params["grid_ids"], params["years"]))
+        summary["geotiff_manifest"] = str(output_dir / "geotiff_manifest.json")
     return {
         **summary,
         "valid": not errors,
@@ -1746,6 +1802,7 @@ def unexpected_error(exc):  # pragma: no cover - Flask defensive boundary
 
 
 @app.get("/")
+@app.get("/portal")
 def index() -> Response:
     return send_from_directory(STATIC_DIR, "index.html")
 
@@ -1755,9 +1812,70 @@ def auth_status() -> Response:
     return jsonify(_web_auth.status(session))
 
 
+def _require_local_gui() -> None:
+    if _web_auth.mode != "local":
+        raise PermissionError("Local authentication is unavailable in shared mode")
+    origin = urlsplit(request.headers.get("Origin", ""))
+    if origin.netloc != request.host or origin.scheme != request.scheme:
+        raise PermissionError("Use the local GUI to perform this action")
+
+
+@app.post("/api/local-auth/status")
+def local_auth_status() -> Response:
+    try:
+        _require_local_gui()
+        body = request.get_json(silent=True) or {}
+        project = body.get("project", "")
+        if not isinstance(project, str):
+            raise ValueError("Project must be text")
+        return jsonify({**_local_auth.status(), "verified": _local_auth.is_verified(project)})
+    except (PermissionError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/local-auth/start")
+def local_auth_start() -> Response:
+    global _local_auth_epoch
+    try:
+        _require_local_gui()
+        body = request.get_json(silent=True) or {}
+        if body.get("action") == "login":
+            with _task_lock:
+                if any(task.get("status") not in TERMINAL_STATUSES for task in _tasks.values()):
+                    raise ValueError("Finish or cancel queued/running tasks before changing credentials")
+        result = _local_auth.start(body.get("action"), project=body.get("project", ""),
+                                   source=body.get("source", "auto"), force=body.get("force", False))
+        if body.get("action") == "login":
+            _local_auth_epoch = secrets.token_hex(16)
+        return jsonify(result), 202
+    except (PermissionError, ValueError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/local-auth/cancel")
+def local_auth_cancel() -> Response:
+    try:
+        _require_local_gui()
+        return jsonify(_local_auth.cancel())
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+
+
+@app.post("/api/public-source/probe")
+def public_source_probe() -> Response:
+    try:
+        _require_local_gui()
+        from aef_grits.public_aef import probe_public_source
+        return jsonify(probe_public_source())
+    except Exception:
+        return jsonify({"reachable": False, "extraction_ready": False,
+                        "error": "Public source check failed; check network access. No extraction was started."}), 503
+
+
 @app.get("/api/auth/login")
 def auth_login() -> Response:
     try:
+        session["login_next"] = "/portal" if request.args.get("next") == "/portal" else "/"
         return redirect(_web_auth.authorization_url(session))
     except (OSError, RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
@@ -1766,8 +1884,9 @@ def auth_login() -> Response:
 @app.get("/api/auth/callback")
 def auth_callback() -> Response:
     try:
+        next_path = session.get("login_next", "/")
         _web_auth.complete_callback(session, request.url)
-        return redirect("/")
+        return redirect(next_path)
     except (OSError, RuntimeError, ValueError, PermissionError) as exc:
         return jsonify({"error": str(exc)}), 403
 
@@ -1854,6 +1973,32 @@ def output_directories() -> Response:
             }
         )
     except (OSError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/output-directories/pick")
+def pick_output_directory() -> Response:
+    """Grant the directory explicitly selected in this computer's native dialog."""
+    try:
+        _require_local_gui()
+        if request.remote_addr not in {"127.0.0.1", "::1"} or urlsplit(request.host_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise PermissionError("Open the GUI through localhost to choose a local folder")
+        if STORAGE_LAYOUT.final_mount and STORAGE_LAYOUT.final_mount.is_linux_ntfs:
+            raise ValueError("Use the configured output browser for Linux NTFS destinations")
+        chosen = pick_directory(_owner_output_root())
+        if chosen is None:
+            return jsonify({"cancelled": True})
+        selected_mount = mount_for_path(chosen)
+        if selected_mount and selected_mount.is_linux_ntfs:
+            raise ValueError("Native folder selection requires a native Linux filesystem; NTFS needs the configured staging workflow")
+        selected = Path(chosen).resolve(strict=True)
+        if not selected.is_dir():
+            raise ValueError("Choose an existing folder")
+        token = _plan_serializer.dumps({"kind": "local-directory", "path": str(selected)})
+        return jsonify({"path": str(selected), "token": token, "cancelled": False})
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except (OSError, RuntimeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
 
@@ -2028,7 +2173,7 @@ def create_task() -> Response:
         plan = record["plan"]
         auth_binding = record["auth_binding"]
         params["auth_source"] = auth_binding["auth_source"]
-        output_dir = _safe_output_dir(params["output_name"], rid)
+        output_dir = _safe_output_dir(params["output_name"], rid, selected_root=params.get("output_root"))
         with _task_lock:
             collision = any(
                 Path(os.path.abspath(task.get("output_dir", ""))) == output_dir
@@ -2048,7 +2193,7 @@ def create_task() -> Response:
             params["samples_path"] = str(target_input / Path(params["samples_path"]).name)
         download_state_dir = run_dir / "download_state"
         download_state_dir.mkdir(parents=True)
-        task_staging_dir = STAGING_ROOT / rid if STAGING_ROOT is not None else None
+        task_staging_dir = STAGING_ROOT / rid if STAGING_ROOT is not None and params.get("output_format") != "geotiff" else None
         if task_staging_dir is None:
             output_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "run.log"
@@ -2307,10 +2452,5 @@ def _remove_server_pid() -> None:
 
 
 atexit.register(_shutdown_processes)
+atexit.register(_local_auth.cancel)
 atexit.register(_remove_server_pid)
-
-
-if __name__ == "__main__":
-    SERVER_PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
-    print("AEF-GRiTS UI starting on http://127.0.0.1:5555")
-    app.run(host="127.0.0.1", port=5555, debug=False, threaded=True)

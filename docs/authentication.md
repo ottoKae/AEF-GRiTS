@@ -70,6 +70,29 @@ aef-grits-auth verify --source adc --project YOUR_GEE_PROJECT
 
 The server-wide ADC mode is optional. It is not used to impersonate Web users.
 
+## Local browser GUI
+
+Start `aef-grits-web` (or `python -m webapp.launcher`) after installing the
+package. The GUI runs on localhost; a public installation/help website does not
+hold your credentials or operate your download jobs.
+
+P0 has separate actions: detect credentials, authorize on this computer, then
+verify the Project and AEF collection. The login button explicitly invokes the
+existing CLI's Earth Engine localhost flow; no password is entered in this GUI.
+The optional `verify --check-aef` performs a small collection-access request.
+Finding a credential file or already being signed into Google is not proof that
+this Python process can use the selected Project.
+
+Authentication runs separately from download workers, with cancellation and
+finite time limits. Do not replace credentials while downloads are active;
+finish/cancel them first. Changed Project/source requires re-verification.
+ADC credentials can be verified in the GUI; ADC login uses the explicit CLI
+above. Closing the GUI does not delete credentials used by other local tools.
+
+The anonymous COG option is experimental connectivity/read-library support only;
+it does not yet implement the GUI download workflow. It needs no GEE identity,
+but selecting it does not bypass the current GEE task authorization.
+
 ## Shared Web OAuth deployment
 
 The local default remains `AEF_GRITS_WEB_AUTH_MODE=local`. For a shared server,

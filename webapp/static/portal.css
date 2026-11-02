@@ -1,0 +1,69 @@
+/* Hallmark · theme: Dose (by request) · genre: modern-minimal · shape: app screen · dose: white · posture: committed · redesign: full · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V3 · weakest: V, reused the shared workbench shell and elevated the product menu above the isolated map. */
+/* Hallmark · answered F7 · The AEF controls share one input radius and spacing recipe; these are working buttons, not repeated content cards. */
+/* Hallmark · answered F25 · The phone planning table retains every CRS and format column in its local horizontal scroll region. */
+.portal-mode #sidebar { width: 360px; min-width: 320px; }
+.portal-mode #sidebar-scroll { padding: var(--space-md); gap: var(--space-sm); }
+.portal-mode #task-panel, .portal-mode #simple-btn-submit { display: none; }
+.portal-mode #simple-plan-details { display:none; }
+#portal-nav { display:flex;align-items:center;gap:var(--space-sm);min-width:0;font-size:var(--text-md); }
+#portal-nav strong { color:var(--text); }
+#portal-nav p { color:var(--text-sec);font-size:var(--text-md); }
+#portal-nav p span { margin-left: var(--space-xs);padding-left: var(--space-xs);border-left:1px solid var(--border); }
+.portal-products { max-width:100%; }
+.portal-products summary { display:flex;align-items:center;gap:var(--space-sm);min-height:44px;padding:var(--space-xs) var(--space-sm);cursor:pointer;list-style:none;color:var(--text);font-size:var(--text-panel-title);white-space:nowrap;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-input); }
+.portal-products summary:hover, .portal-products[open] summary { background:var(--accent-soft);border-color:var(--accent); }
+.portal-products summary span { font-size:var(--text-md); }
+.portal-products summary::after { content:'';display:inline-block;width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);margin-left:auto;flex-shrink:0; }
+.portal-products[open] summary::after { transform:translateY(3px) rotate(225deg); }
+.portal-product-menu { position:absolute;top:calc(100% + var(--space-xs));left:0;width:320px;max-height:calc(100dvh - 160px);overflow-y:auto;padding:var(--space-md);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-card);text-align:left;z-index:var(--z-dropdown); }
+.portal-product-menu label { display:flex; gap: var(--space-sm); padding: var(--space-sm) 0; align-items:center; }
+.portal-product-menu small { color:var(--text-sec); display:block; margin: var(--space-2xs) 0; }
+.portal-product-menu input { accent-color:var(--accent); }
+.portal-product-menu .unavailable { opacity:.55; }
+.portal-btn { background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-input); padding:var(--space-xs) var(--space-sm); cursor:pointer; font:inherit; white-space:nowrap; transition:background-color .15s,color .15s,border-color .15s; }
+.portal-btn:hover:not(:disabled) { border-color:var(--accent); }
+.portal-btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.portal-btn.primary:hover:not(:disabled) { background:var(--accent-hover); }
+#portal-preview { width:100%; font-size:16px; padding: var(--space-sm); }
+#portal-panel { flex:0 0 38%; min-height:240px; max-height:440px; background:var(--surface); border-top:1px solid var(--border); display:flex; flex-direction:column; }
+#portal-panel.is-collapsed { flex:0 0 auto;min-height:0;max-height:none; }
+#portal-panel-body { display:flex;flex-direction:column;flex:1;min-height:0; }
+.portal-panel-actions { display:flex;align-items:center;gap: var(--space-xs); }
+.portal-panel-header { display:flex; align-items:center; justify-content:space-between; padding: var(--space-sm) var(--space-md); gap: var(--space-sm); border-bottom:1px solid var(--border); flex-shrink:0; background:var(--surface2); }
+.portal-tabs { display:flex; gap: var(--space-xs); }
+.portal-tabs [aria-selected='true'] { color:var(--accent); background:var(--portal-selected); border-color:var(--accent); }
+.portal-panel-page { min-height:0; flex:1; display:flex; flex-direction:column; }
+.portal-panel-page[hidden] { display:none; }
+.portal-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap: var(--space-xs); padding: var(--space-sm) var(--space-md); font-size:14px; }
+.portal-toolbar p { flex:1; color:var(--text-sec); }
+.portal-toolbar select { width:auto; font-size:14px; padding: var(--space-xs) var(--space-sm); }
+.portal-table-wrap { overflow:auto; flex:1; }
+.portal-table { border-collapse:collapse; width:100%; text-align:left; font-size:var(--text-md); }
+.portal-table th { position:sticky; top:0; background:var(--portal-heading); padding:var(--space-sm) var(--space-md); font-weight:500; color:var(--text); white-space:nowrap; z-index:var(--z-base); }
+.portal-table td { padding: var(--space-sm) var(--space-md); border-bottom:1px solid var(--border); vertical-align:middle; }
+.portal-table td small { display:block; margin-top: var(--space-2xs); color:var(--text-sec); font-size:13px; line-height:1.5; }
+.portal-table .portal-target { min-width:190px; max-width:360px; }
+.portal-target small { overflow-wrap:anywhere; }
+.portal-table progress { display:block; width:105px; height:7px; margin-top: var(--space-xs); accent-color:var(--accent); }
+.portal-table .portal-actions { display:flex; gap: var(--space-xs); flex-wrap:wrap; min-width:150px; }
+.portal-empty { text-align:center; padding: calc(var(--space-2xs) * 9)!important; color:var(--text-sec); }
+#portal-grid-notice { padding: var(--space-xs) var(--space-md); color:var(--text-sec); font-size:14px; }
+#portal-grid-notice summary, .portal-table summary { cursor:pointer; }
+#portal-plan-capacity { display:flex;gap:var(--space-lg);flex-wrap:wrap;padding:0 var(--space-md) var(--space-sm); }
+#portal-plan-capacity[hidden] { display:none; }
+#portal-plan-capacity dt { color:var(--text-sec);font-size:13px; }
+#portal-plan-capacity dd { margin:0;font-size:var(--text-md);font-variant-numeric:tabular-nums; }
+@media(max-width:1000px) {
+  #portal-nav .header-product-meta { display:none; }
+  .portal-mode #sidebar { width:310px; min-width:290px; }
+}
+@media(max-width:700px) {
+  .portal-mode #main { overflow-y:auto; display:block; }
+  .portal-mode #sidebar { width:100%; min-width:0; }
+  .portal-mode #workspace { height:85vh; }
+  #portal-panel { flex-basis:55%; min-height:270px; }
+  #portal-nav { align-items:flex-start; }
+  .portal-products summary { white-space:normal; }
+  .portal-product-menu { left:var(--space-xs);right:var(--space-xs);width:auto;max-height:calc(100dvh - 100% - var(--space-md)); }
+}

@@ -7,22 +7,74 @@ implementation: every accepted plan becomes the tested command-line interface.
 
 ## Install, test, and start
 
-From the repository root:
+From a repository checkout or extracted source ZIP, install once:
 
 ```powershell
-python -m pip install -e ".[download,web]"
-python webapp/app.py
+python -m pip install ".[download,web]"
+aef-grits-web
 ```
 
-Open `http://127.0.0.1:5555`. Enter a Project your existing Earth Engine/ADC
-identity can use. The download process never starts an interactive login.
+The installed launcher opens `http://127.0.0.1:5555/portal`; it also works outside
+the repository. `python -m webapp.launcher` is the module fallback. Options:
+`--port`, `--no-browser`, `--output-root`, `--state-dir`. No public listener is
+enabled. The old source entry `python webapp/app.py` remains available.
 
-Run the API/unit suite and the four browser workflow tests with:
+Default data goes to `~/Downloads/AEF-GRiTS`. State/log defaults are
+`%LOCALAPPDATA%/AEF-GRiTS` on Windows, `~/Library/Application Support/AEF-GRiTS`
+on macOS, and `$XDG_STATE_HOME/aef-grits` or `~/.local/state/aef-grits` on Linux.
+Explicit command arguments override the corresponding environment variables.
+
+Existing source-tree runs/output are not relocated. Stop the old instance and
+pass their absolute paths with `--state-dir` and `--output-root` to reuse them.
+Do not point a new instance at a running instance's state directory. Closing a
+browser tab does not stop Python; exiting the process may interrupt tasks, which
+can be resumed explicitly after restart.
+
+### Two views, one backend
+
+- `/`: the compact local interface.
+- `/portal`: product selection, planning table, plan export and download manager.
+
+Use the header link to switch views. Both views reuse the same authentication,
+preflight, signed plans, queue and CLI downloaders; this is not a second service.
+Only **AEF** is enabled. The disabled Tessera product is not downloadable; the
+Tessera 0.1° AEF storage grid remains available.
+
+In `/portal`, press **检索 / 预检**, inspect the resolved grid IDs or point file,
+years, CRS and size estimate, then press **确认下载**. Planning alone creates no
+download task. Editing the form invalidates the prepared plan. The planner
+checks local geometry/capacity, **not remote GEE imagery availability**.
+**导出计划** exports a JSON summary without the signed authorization token or
+Project ID; it is not an executable task manifest.
+
+The download manager filters queued, active, completed and problem tasks and
+shows output paths, validation, logs, progress, actual block processing rate
+and current-grid ETA when supplied by the worker. Block rate is not MB/s.
+Credentials requiring renewal can be explicitly reauthorized and resumed.
+Results are written directly by Python. In the recommended local mode this is
+the user's own disk; no archive download or browser filesystem permission is
+needed. In optional remote deployments it remains the server's disk.
+
+The supported GUI download source is GEE. Anonymous AEF COG access is currently
+an experimental connectivity probe and Python reader, not an enabled end-to-end
+GUI download route. A successful probe must not be interpreted as a download.
+
+Screenshots and local usage: [Chinese guide](../docs/web-portal.zh-CN.md).
+
+Run the API/unit suite and browser workflow tests with isolated disposable state:
 
 ```powershell
 python -m pip install -e ".[gee,geo,stream,web,web-e2e]"
-python -m pytest tests/test_webapp.py tests/test_webapp_e2e.py -q
+$run = Join-Path $env:TEMP ("aef-web-tests-" + [guid]::NewGuid().ToString('N'))
+$env:AEF_GRITS_WEB_STATE = Join-Path $run 'state'
+$env:AEF_GRITS_WEB_OUTPUT = Join-Path $run 'output'
+$env:AEF_GRITS_RESOURCE_STATE = Join-Path $run 'resources'
+New-Item -ItemType Directory -Path $run -Force | Out-Null
+python -m pytest tests/test_webapp.py tests/test_webapp_e2e.py tests/test_web_auth.py -p no:cacheprovider --basetemp "$run/pytest"
 ```
+
+Run these commands in a dedicated test terminal; do not reuse its temporary
+output/state environment to start production downloads.
 
 The Playwright tests reuse an installed Chromium/Chrome executable when one is
 available. They use synthetic command execution; they do not download Earth
@@ -30,18 +82,35 @@ Engine data.
 
 ## Two-stage protocol
 
-The main screen is intentionally a three-step form:
+Both views share P0–P3:
 
-1. choose **Points** or **Grid**;
-2. choose a CSV/point Shapefile, or choose MGRS/Tessera and set an AOI;
-3. enter/confirm the Earth Engine Project, choose years and an output
-   subdirectory, then press **Download**.
+1. **P0 connection:** detect credentials, explicitly authorize locally if needed,
+   then verify the Earth Engine **Project ID** and AEF access; never enter a password.
+2. **P1 location:** choose Points/Grid; upload CSV/point Shapefile or click map
+   points; for grids, set an AOI and select intersecting MGRS/Tessera cells.
+3. **P2 years/query:** choose years and inspect the local preflight result.
+4. **P3 storage/download:** choose a local folder and raster format, then confirm.
+
+Preparation has four checks at 25% each: connection, spatial input, years and
+configured storage. 100% means the form is ready, not that data has downloaded
+or disk checks have passed. The actual task progress is displayed separately.
+
+Map points become a WGS84 CSV consumed by the existing point workflow.
+Grid selections are revalidated against the AOI, reflected in the size estimate
+and bound into a new signed plan. Entire selected cells are downloaded, not
+only the pixels inside the input polygon. No selected cell means no download.
 
 ## Authentication modes
 
 `AEF_GRITS_WEB_AUTH_MODE=local` is the default. It is suitable for one trusted
 local user and reuses credentials already configured for the service account or
-OS user. No Project is hard-coded in the frontend or repository.
+OS user. No Project is hard-coded in the frontend or repository. The local
+buttons invoke the existing authentication CLI in an isolated process:
+**检测凭据**, **本机 Google 授权**, **验证 Project 与 AEF**, and **取消等待**.
+Discovery and successful login alone are not proof of Project/collection access.
+Local credentials stay on this computer and are not sent to a public website.
+Login is explicit and blocked while download tasks are active; the download
+worker never invokes it automatically. ADC login remains a deliberate CLI action.
 
 For a shared server, use `AEF_GRITS_WEB_AUTH_MODE=oauth`. Each user explicitly
 clicks **Login Earth Engine**, supplies a Project they can access, and completes
@@ -73,7 +142,7 @@ Technical retry, chunk, checkpoint and CRS settings are not shown in the main
 form. Safe tested defaults are used. Capacity planning still happens after the
 single Download click and before the confirmation dialog.
 
-The left sidebar is reserved for defining a new download. Task history is a
+In the compact view, the left sidebar is reserved for defining a new download. Task history is a
 single horizontal dock below the map, forming an L-shaped workspace with the
 sidebar. The newest task is always placed at the left. Arrow controls and native
 horizontal scrolling expose older tasks without adding a second row. Each card
@@ -83,11 +152,20 @@ storage path, product-validation status, and progress.
 Native browser file inputs are visually replaced by consistent large picker
 tiles. The CSV and Shapefile modes still use the browser's secure file chooser,
 but the chosen names are reported inside the designed tile. Grid AOI import and
-vector drawing use the same icon-first layout. Output selection opens a
-server-side directory browser rooted strictly at `AEF_GRITS_WEB_OUTPUT`; it can
-navigate or create subdirectories but cannot escape that root. This distinction
-is intentional: a browser-side directory picker cannot grant the Python server
-a trustworthy writable filesystem path.
+vector drawing use the same icon-first layout.
+
+In local mode, output selection opens the operating system's folder chooser in
+a short-lived Python/Tk child process. The user may choose another disk; a new
+task directory is created inside the selection. Cancel preserves the old choice.
+The selection grant is bound into the signed plan and capacity is checked on
+the selected disk. Arbitrary absolute paths in browser requests are not accepted.
+
+The separate Web folder browser remains confined to `AEF_GRITS_WEB_OUTPUT` and
+is the fallback for missing Tk or headless operation. Remote/shared mode uses
+this browser rather than a native dialog: a server cannot open the visitor's
+local folder chooser. Tk is optional for downloading; Debian/Ubuntu system
+Python uses the distribution's `python3-tk` package when native dialogs are
+needed, not `pip install tkinter`. Other environments need their matching Tk.
 
 All work follows **preflight -> explicit confirmation -> execution**:
 
@@ -106,15 +184,35 @@ All work follows **preflight -> explicit confirmation -> execution**:
    second task.
 
 The estimate is based on uncompressed float32 values and is deliberately not a
-compressed-storage promise.
+compressed-storage promise. Both TIFF modes reserve extra raw space for Zarr
+(permanent or temporary) and additional rasters during download/export.
+
+## Raster format
+
+Zarr is the default. **Zarr + GeoTIFF** (`--export-geotiff`) keeps both products;
+**GeoTIFF only** (`--geotiff-only`) delivers TIFFs and catalog/manifest/reports.
+The two CLI flags are mutually exclusive. Each year has one 64-band float32
+TIFF with windowed lossless DEFLATE, CRS/transform/band names and NaN NoData;
+large rasters use BigTIFF (explicitly at 4 GiB uncompressed or above).
+
+GeoTIFF-only first downloads through a task-owned temporary Zarr cache. It
+removes only that cache after successful TIFF validation; failure keeps it for
+resume. Existing Zarr products are never deleted. Peak disk space still covers
+both cache and TIFFs; this is not a cache-free direct-TIFF writer. Completed
+TIFFs remain readable without Zarr, with their provenance in metadata.
+
+TIFF export is rejected for Linux NTFS/NTFS3 final targets; choose a native
+filesystem. Point downloads remain Parquet. Runtime validation checks TIFF
+structure/provenance and recorded size, not every pixel; synthetic tests check
+exported values and masks.
 
 ## Workflow and CRS contract
 
 | Workflow | Selection | Local output |
 |---|---|---|
 | Points | CSV or Point/MultiPoint Shapefile | sharded Parquet |
-| MGRS | exact AOI intersection with packaged `aef_grits/data/mgrs.parquet` | one UTM Zarr per MGRS grid |
-| Tessera 0.1 degree | positive-area AOI intersection with 0.1-degree cells | one UTM Zarr per Tessera cell |
+| MGRS | exact AOI intersection with packaged `aef_grits/data/mgrs.parquet` | UTM Zarr and/or annual GeoTIFF per MGRS grid |
+| Tessera 0.1 degree | positive-area AOI intersection with 0.1-degree cells | UTM Zarr and/or annual GeoTIFF per Tessera cell |
 
 The browser exposes only MGRS and Tessera dense grids. Reference grids remain
 available through the documented Python/CLI API for advanced reproducible work.
@@ -123,7 +221,7 @@ The browser/server exchange AOI geometry in `EPSG:4326`. Leaflet displays it in
 Web Mercator (`EPSG:3857`) only for visualization. Server-resolved cell outlines
 are returned as WGS84 GeoJSON and overlaid on the map. Dense output is written
 at 10 m in the grid's actual local UTM CRS, which is shown in the plan and saved
-in the catalog/Zarr metadata. Reference bounds are transformed from their
+in the catalog and raster metadata. Reference bounds are transformed from their
 declared CRS before display; the browser never treats projected coordinates as
 longitude/latitude.
 
@@ -153,7 +251,7 @@ preflight rather than silently converted.
   available. The browser retains only the latest 1,000 lines; the full log
   remains available from the task card.
 - A task cannot target an output directory already used by another active task.
-- After a zero exit code, output validation opens the Parquet/Zarr products and
+- After a zero exit code, output validation opens the Parquet/Zarr/GeoTIFF products and
   checks catalogs, row/grid counts, dimensions, CRS, 10 m resolution,
   compression metadata, and expected paths. A task becomes `done` only when
   validation succeeds.
@@ -165,9 +263,9 @@ Optional environment variables:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `AEF_GRITS_WEB_STATE` | `webapp/runs` | native-filesystem plans, PID, logs, checkpoints and reports |
+| `AEF_GRITS_WEB_STATE` | user application state directory | native-filesystem plans, PID, logs, checkpoints and reports |
 | `AEF_GRITS_WEB_STAGING` | unset | native-filesystem per-task staging root; required for Linux NTFS output |
-| `AEF_GRITS_WEB_OUTPUT` | `webapp/output` | authoritative output root |
+| `AEF_GRITS_WEB_OUTPUT` | `~/Downloads/AEF-GRiTS` | default root and Web folder-browser boundary |
 | `AEF_GRITS_WEB_CONCURRENCY` | `2` | maximum simultaneous subprocesses |
 | `AEF_GRITS_WEB_MAX_QUEUE` | `20` | maximum waiting tasks |
 | `AEF_GRITS_WEB_MAX_GRIDS` | `500` | maximum grids in one plan |
@@ -194,8 +292,8 @@ filesystem). The server refuses to start new work when it can see a related
 uninterruptible D-state process. Active control files and the authoritative
 catalog never use NTFS; only completed products are delivered there.
 
-The output field accepts a relative subdirectory only. Absolute paths and `..`
-are rejected, so a browser request cannot write outside the configured output
-root. Local mode is intended for one trusted user. OAuth mode is intended for
-an authenticated campus deployment behind HTTPS, not an anonymous public
-download service.
+The Web folder browser accepts relative subdirectories only and rejects `..`.
+Only an explicit local native-folder selection grants a destination outside the
+configured root; that grant is validated and bound to the task plan. Local mode
+is intended for one trusted user. OAuth mode is intended for an authenticated
+campus deployment behind HTTPS, not an anonymous public download service.

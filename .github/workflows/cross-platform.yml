@@ -33,6 +33,7 @@ jobs:
           aef-grits-benchmark-summary --help
           aef-grits-auth --help
           aef-grits-auth status --json
+          aef-grits-web --help
       - name: Run a low-memory MGRS plan without Earth Engine access
         shell: bash
         run: |
@@ -44,6 +45,16 @@ jobs:
             --state-dir "${RUNNER_TEMP}/aef-state" \
             --resource-profile low-memory-1g \
             --plan-only
+      - name: Build and install the wheel instead of the editable checkout
+        shell: bash
+        run: |
+          python -m pip wheel . --no-deps --wheel-dir "${RUNNER_TEMP}/aef-wheels"
+          python -m pip install --force-reinstall --no-deps "${RUNNER_TEMP}"/aef-wheels/aef_grits-*.whl
+      - name: Verify installed Web assets and commands outside the checkout
+        shell: bash
+        run: |
+          cd "${RUNNER_TEMP}"
+          python "${GITHUB_WORKSPACE}/tests/check_installed_web.py" --work-dir "${RUNNER_TEMP}/aef-installed-web"
 
   web-e2e:
     runs-on: ubuntu-latest

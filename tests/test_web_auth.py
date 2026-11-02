@@ -78,6 +78,18 @@ def test_shared_api_requires_login(monkeypatch):
     client = web.app.test_client()
     assert client.get("/api/auth/status").status_code == 200
     assert client.get("/api/capabilities").status_code == 401
+    assert client.get("/portal").status_code == 200
+
+
+def test_login_returns_to_portal_after_session_rotation(monkeypatch):
+    monkeypatch.setattr(web._web_auth, "authorization_url", lambda session: "https://accounts.google.com/")
+    monkeypatch.setattr(web._web_auth, "complete_callback", lambda session, url: session.clear())
+    client = web.app.test_client()
+    for requested, expected in [("/portal", "/portal"), ("https://untrusted.example", "/")]:
+        assert client.get("/api/auth/login", query_string={"next": requested}).status_code == 302
+        response = client.get("/api/auth/callback?code=test")
+        assert response.status_code == 302
+        assert response.location == expected
 
 
 def test_shared_tasks_are_private_to_owner(monkeypatch, tmp_path):

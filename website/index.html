@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AEF-GRiTS：用网页选择点位、区域和年份，把 AlphaEarth 年度特征下载到自己的电脑。支持 Windows、macOS 和 Linux。">
+  <title>AEF-GRiTS：下载 AEF 年度特征</title>
+  <link rel="stylesheet" href="home.css">
+  <script>
+    if (/iPhone|iPod|Android.*Mobile/i.test(navigator.userAgent)) {
+      document.documentElement.classList.add('phone-device');
+    }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <header>
+    <nav class="wrap nav" aria-label="主导航">
+      <div class="brand-line">
+        <a class="brand" href="#main">AEF-GRiTS</a>
+        <a class="brand-author" href="https://orcid.org/0000-0001-8443-9819" target="_blank" rel="noopener noreferrer">by Kae</a>
+      </div>
+      <div class="nav-links">
+        <a href="#install">安装与启动</a>
+        <a href="#workflow">开始下载</a>
+        <a href="#data">数据格式</a>
+        <a href="#agents">智能体下载</a>
+        <a href="https://github.com/ottoKae/AEF-GRiTS">GitHub</a>
+      </div>
+    </nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="phone-notice" aria-labelledby="phone-title">
+      <h1 id="phone-title">请在电脑上打开</h1>
+      <p class="lead">AEF-GRiTS 需要在 Windows、macOS 或 Linux 电脑上安装并运行。</p>
+      <button class="button primary" type="button" data-copy="page-address" data-copy-status="page-copy-status" hidden>复制网址</button>
+      <p id="page-address" class="note"></p>
+      <p id="page-copy-status" class="note" role="status" aria-live="polite"></p>
+    </div>
+    <div class="desktop-home">
+    <div class="hero">
+      <div>
+        <h1>AEF数据<br>端到端直传本地</h1>
+        <p class="lead">用网页选择位置和年份，下载 AlphaEarth 年度特征。</p>
+        <div class="actions">
+          <a class="button primary" href="#install">首次使用，安装工具</a>
+          <a class="button" href="http://127.0.0.1:5555/portal" target="_blank" rel="noopener noreferrer">已启动，打开下载页面</a>
+        </div>
+      </div>
+      <div class="strip" aria-label="数据与工具概要">
+        <span><strong>本地保存</strong> 无需 Google Drive</span>
+        <span><strong>跨平台</strong> Windows、macOS、Linux</span>
+        <span><strong>全球</strong> 10m格网像元</span>
+        <span><strong>64 维</strong> 年度 AEF 特征</span>
+      </div>
+    </div>
+
+    <section id="install" aria-labelledby="install-title">
+      <div class="section-head">
+        <h2 id="install-title">安装并打开工具</h2>
+        <p>首次安装需要 Python，之后从浏览器操作。</p>
+      </div>
+      <div class="notice" id="release-note"><strong>当前为预览版，安装包尚未发布。</strong>下方是本版源码的安装方法。<a href="https://github.com/ottoKae/AEF-GRiTS/releases">查看发布进度</a></div>
+      <div class="install-grid">
+        <div class="install-ledger">
+          <div class="setup-row">
+          <span class="step-number" aria-hidden="true">1</span>
+          <div class="setup-content">
+          <h3 class="setup-heading">准备 Python 和源码</h3>
+          <p>推荐 <a href="https://www.python.org/downloads/">Python 3.12</a>，也支持 3.11。</p>
+          <p>获得本版源码后，解压并在含 <code>pyproject.toml</code> 的文件夹打开终端。</p>
+          </div>
+          </div>
+          <div class="setup-row">
+          <span class="step-number" aria-hidden="true">2</span>
+          <div class="setup-content">
+          <h3 class="setup-heading">复制命令，安装并启动</h3>
+          <p class="note">安装只做一次。下次使用时，直接运行启动命令。</p>
+          <div class="platforms">
+          <details open>
+            <summary>Windows / PowerShell</summary>
+            <div class="command-label"><strong>首次安装</strong><button class="copy" type="button" data-copy="install-windows" hidden>复制安装命令</button></div>
+            <pre><code id="install-windows">py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install ".[download,web]"</code></pre>
+            <div class="command-label"><strong>启动工具</strong><button class="copy" type="button" data-copy="launch-windows" hidden>复制启动命令</button></div>
+            <pre><code id="launch-windows">.\.venv\Scripts\python.exe -m webapp.launcher</code></pre>
+            <p class="note">使用 Python 3.11 时，将 <code>-3.12</code> 换成 <code>-3.11</code>。</p>
+          </details>
+          <details>
+            <summary>macOS / Linux / Terminal</summary>
+            <div class="command-label"><strong>首次安装</strong><button class="copy" type="button" data-copy="install-unix" hidden>复制安装命令</button></div>
+            <pre><code id="install-unix">python3 -m venv .venv
+.venv/bin/python -m pip install ".[download,web]"</code></pre>
+            <div class="command-label"><strong>启动工具</strong><button class="copy" type="button" data-copy="launch-unix" hidden>复制启动命令</button></div>
+            <pre><code id="launch-unix">.venv/bin/python -m webapp.launcher</code></pre>
+            <p class="note">先用 <code>python3 --version</code> 确认版本。Linux 缺少 venv 时按发行版说明安装；不要使用 sudo pip。</p>
+          </details>
+          <p class="note" id="copy-status" role="status" aria-live="polite"></p>
+          <noscript><p class="note">请选中命令，手动复制到终端。</p></noscript>
+          <details><summary>已有 conda 环境？</summary><p>在自己的环境中安装，不必再创建 venv：</p><pre><code>python -m pip install ".[download,web]"
+python -m webapp.launcher</code></pre></details>
+          </div>
+          </div>
+          </div>
+        </div>
+        <aside class="workbench-entry" aria-label="打开下载页面">
+          <h3 class="setup-heading">3. 打开下载页面</h3>
+          <p>运行启动命令后，浏览器会自动打开。没有打开时，点击下方按钮。</p>
+          <a class="button primary" id="open-workbench" href="http://127.0.0.1:5555/portal" target="_blank" rel="noopener noreferrer">打开下载页面</a>
+          <p class="note">下载时请保持启动工具的终端运行。</p>
+          <div class="open-local">
+          <details><summary>页面打不开？</summary><p>确认启动命令仍在运行，再打开 <code>http://127.0.0.1:5555/portal</code>。只点击网页按钮不会启动 Python。</p><p>若提示端口被占用，在启动命令后加 <code>--port 5556</code>，再打开终端显示的新地址。</p></details>
+          <details><summary>以后怎么启动或更新？</summary><p>再次使用时，在同一文件夹运行启动命令。</p><p>更新前先完成或取消下载，再关闭旧服务、更新源码、重新启动。只刷新网页不会更新程序。</p></details>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="workflow" aria-labelledby="workflow-title">
+      <div class="section-head">
+        <h2 id="workflow-title">开始下载</h2>
+        <p>在刚打开的下载页面中，完成以下设置。</p>
+      </div>
+      <div class="steps">
+        <article class="step"><h3>连接 Google</h3><p>使用已有授权，或点击 Google 授权。填写有权限的 Earth Engine Project，并验证连接。</p></article>
+        <article class="step"><h3>选择位置</h3><p>上传点位或边界文件，也可以直接在地图上选点、圈选区域。</p></article>
+        <article class="step"><h3>选择年份和文件夹</h3><p>勾选需要的年份，选好文件格式和保存位置。</p></article>
+        <article class="step"><h3>确认下载</h3><p>检查范围和磁盘空间，确认后开始下载。进度在下载管理中查看。</p></article>
+      </div>
+      <p class="note">目前通过 Google Earth Engine（GEE）下载，需要授权。免登录下载仍在测试中。</p>
+      <details class="workflow-details">
+        <summary>第一次使用 GEE，怎么登录？</summary>
+        <p>点击下载页面中的 Google 授权，在 Google 官方页面完成登录。Project 是您的 Cloud 项目 ID：该项目需要注册并启用 Earth Engine，且当前账号有使用权限。</p>
+        <p>通常在页面中操作即可。也可以在安装目录运行以下命令：</p>
+        <details><summary>Windows 认证命令</summary><pre><code>.\.venv\Scripts\python.exe -m aef_grits.auth_cli login --source earthengine --auth-mode localhost --project YOUR_GEE_PROJECT
+.\.venv\Scripts\python.exe -m aef_grits.auth_cli verify --source auto --project YOUR_GEE_PROJECT</code></pre></details>
+        <details><summary>macOS / Linux 认证命令</summary><pre><code>.venv/bin/python -m aef_grits.auth_cli login --source earthengine --auth-mode localhost --project YOUR_GEE_PROJECT
+.venv/bin/python -m aef_grits.auth_cli verify --source auto --project YOUR_GEE_PROJECT</code></pre></details>
+        <p class="note">把 YOUR_GEE_PROJECT 换成自己的项目 ID。不要分享密码或凭据文件；下载过程中不会自动弹出登录。</p>
+        <a href="https://developers.google.com/earth-engine/guides/auth">Google 官方认证说明</a>
+      </details>
+    </section>
+
+    <section id="data" aria-labelledby="data-title">
+      <div class="section-head">
+        <h2 id="data-title">下载后得到什么？</h2>
+        <p>点位保存为表格，区域保存为栅格。文件都在您选择的文件夹中。</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">下载内容</th><th scope="col">文件格式</th><th scope="col">用途</th></tr></thead>
+          <tbody>
+            <tr><td>点位</td><td>Parquet</td><td>按点位和年份读取特征，用于统计或模型训练。</td></tr>
+            <tr><td>区域</td><td>Zarr</td><td>按年份或位置读取，适合多年度分析。</td></tr>
+            <tr><td>区域</td><td>GeoTIFF</td><td>每个格网每年一个 64 波段栅格，可用 QGIS 等软件打开。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details class="data-notes"><summary>格式和存储说明</summary>
+      <p>区域下载可以只保留 TIFF，也可以同时保留 Zarr。生成 TIFF 需要临时 Zarr 空间；验证成功后才清理本任务的缓存，失败时保留以便续传。</p>
+      <p>AEF 是特征数据，不是普通卫星照片。MGRS 和 0.1°只是存储格网的选择，下载的仍是 AEF。</p>
+      <p>默认保存到下载文件夹中的 AEF-GRiTS，也可以选择其他磁盘。若在远程服务器运行，文件保存在服务器，不会自动传回电脑。</p>
+      </details>
+      <p><a href="https://github.com/ottoKae/AEF-GRiTS/blob/main/docs/data-layout.md">数据组织与读取说明</a></p>
+    </section>
+
+    <section id="agents" class="optional-section" aria-labelledby="agents-title">
+      <div class="agent-band">
+        <details>
+          <summary id="agents-title"><h2>也可以让智能体帮忙下载</h2></summary>
+          <p>在 AEF-GRiTS 仓库中打开智能体，直接告诉它要下载什么，例如：</p>
+          <blockquote>帮我下载这些点位 2025 年的 AEF。先检查文件，看看需要多少空间。</blockquote>
+          <p>支持在本机或指定的 SSH 服务器上运行。远程下载的文件留在服务器，传回电脑需另行安排。</p>
+          <p><a href="https://github.com/ottoKae/AEF-GRiTS/blob/main/README.md#agent-assisted-local-and-ssh-downloads">智能体使用说明</a></p>
+        </details>
+        <p class="note">这项功能尚未发布，目前随本次源码更新提供。</p>
+      </div>
+    </section>
+
+    <section class="optional-section" aria-labelledby="operation-title">
+      <div class="two-col">
+        <div>
+          <h2 id="operation-title">常见问题</h2>
+        </div>
+        <div>
+          <details><summary>关掉网页，下载会停止吗？</summary><p>只要启动工具的终端还在运行，关闭网页不会停止下载。请避免关闭终端或让电脑休眠。需要停止时，在下载管理中取消任务。</p></details>
+          <details><summary>下载失败了怎么办？</summary><p>先看任务中的报错，检查网络、账号权限或磁盘空间。保留已下载的文件和任务记录，便于解决问题后续传。</p></details>
+          <details><summary>下载按钮为什么是灰色的？</summary><p>查看页面提示，补齐尚未完成的设置。修改范围、年份或 Project 后，需要重新检查。</p></details>
+          <details><summary>需要什么网络条件？</summary><p>运行工具的电脑需要能够访问 Google。官网不提供网络代理，也不提供他人账号的下载额度。</p></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="privacy" aria-labelledby="privacy-title">
+      <details>
+        <summary id="privacy-title"><h2>隐私与数据许可</h2></summary>
+        <p>官网不收集账号、样本或凭据，也不使用第三方统计脚本。工具在您的电脑上运行；查询时，必要的坐标和请求会发送给 Google。地图底图遵守其提供方的使用规则。</p>
+        <p>AEF-GRiTS 不是 Google 官方服务。研究中请分别引用本工具与原始数据，并遵守数据许可。</p>
+      </details>
+      <div class="author-links"><span>作者与维护者：<a href="https://github.com/ottoKae">ottoKae</a></span><a href="https://github.com/ottoKae/AEF-GRiTS/issues">反馈问题</a><a href="https://github.com/ottoKae/AEF-GRiTS/blob/main/README.md" lang="en">English documentation</a></div>
+    </section>
+    </div>
+  </main>
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-top"><span>AEF-GRiTS</span><a href="#install">返回安装步骤</a></div>
+      <p>原始数据由 Google 和 Google DeepMind 提供。</p>
+      <a href="https://developers.google.com/earth-engine/guides/aef_on_gcs_readme">数据说明与 CC-BY 4.0 许可</a>
+    </div>
+  </footer>
+  <script>
+    document.getElementById('page-address').textContent = window.location.href;
+    document.querySelectorAll('[data-copy]').forEach(button => {
+      button.hidden = false;
+      button.addEventListener('click', async () => {
+        const command = document.getElementById(button.dataset.copy);
+        const status = document.getElementById(button.dataset.copyStatus || 'copy-status');
+        const copyingAddress = button.dataset.copy === 'page-address';
+        try {
+          await navigator.clipboard.writeText(command.textContent);
+          status.textContent = copyingAddress ? '网址已复制，请在电脑上打开。' : '已复制，请粘贴到终端运行。';
+        } catch {
+          const range = document.createRange();
+          range.selectNodeContents(command);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          status.textContent = copyingAddress ? '请长按上方网址，选择复制。' : '已选中命令，请按 Ctrl+C 复制（macOS 为 ⌘C）。';
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -66,6 +66,23 @@ aef-grits-auth verify --source adc --project YOUR_GEE_PROJECT
 
 服务器统一ADC只是可选的单位托管模式，不能用于冒充共享Web用户。
 
+## 本机浏览器GUI
+
+安装后运行`aef-grits-web`，或`python -m webapp.launcher`。界面在localhost运行；
+公开安装/帮助网站不保管用户凭据，也不调度用户的下载任务。
+
+P0依次提供“检测凭据”“本机 Google 授权”“验证 Project 与 AEF”。登录按钮主动调用
+现有CLI的Earth Engine localhost认证流程；用户只在Google官方页面授权，不在GUI输入密码。
+`verify --check-aef`会额外做一个小型集合访问请求。“找到凭据文件”或浏览器已登录Google，
+都不等于当前Python已获准使用所选Project。
+
+认证与下载进程分开，有取消和有限等待时间。下载任务存在时先完成/取消任务，再更换凭据；
+更改Project或来源须重新验证。GUI可验证ADC，ADC登录仍使用上面的主动CLI命令。
+退出GUI不会删除可能被同机其他工具使用的凭据。
+
+匿名COG入口目前只是实验连通检查/读取库，尚未接通GUI下载。它不需要GEE身份，
+但不能通过切换该选项绕过当前GEE任务的认证。
+
 ## 校园共享Web部署
 
 本地默认仍为`AEF_GRITS_WEB_AUTH_MODE=local`。共享部署应通过可信反向代理提供

@@ -217,6 +217,30 @@ def test_multigrid_progress_is_aggregated(tmp_path, monkeypatch):
         web._tasks.pop(rid, None)
 
 
+@pytest.mark.parametrize('scheme', ['tessera_0p1', 'mgrs'])
+def test_grid_subset_replans_size_and_worker_selection(scheme):
+    body = {'project': 'gee-test', 'workflow': 'grid', 'years': [2025],
+            'gridScheme': scheme, 'bbox': [117.01, 31.01, 117.19, 31.09]}
+    full = web._plan_grid(web._normalize_params(body))
+    selected = full['grid_ids'][-1]
+    params = web._normalize_params({**body, 'selectedGridIds': [selected]})
+    subset = web._plan_grid(params)
+    assert full['grid_count'] >= 2 and subset['grid_count'] == 1
+    assert subset['raw_bytes'] < full['raw_bytes']
+    assert subset['grid_ids'] == [selected]
+    command = web._build_cmd(params, Path('output'))
+    if scheme == 'tessera_0p1':
+        assert command.count('--tessera-tile') == 1
+        assert command[command.index('--tessera-tile') + 1:] == ['117.15', '31.05']
+    else:
+        assert command[command.index('--tiles') + 1:] == [selected]
+    with pytest.raises(ValueError, match='intersect'):
+        web._plan_grid(web._normalize_params({**body, 'selectedGridIds': ['outside']}))
+    for invalid in ([], 'grid_117.15_31.05', [None]):
+        with pytest.raises(ValueError, match='Select at least one'):
+            web._normalize_params({**body, 'selectedGridIds': invalid})
+
+
 class _DormantExecutor:
     def submit(self, *args, **kwargs):
         return None
@@ -269,6 +293,23 @@ def test_cross_origin_task_submission_is_rejected(isolated_runner):
         headers={"Origin": "https://malicious.example"},
     )
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("plan", [None, {
+    "raw_bytes": 1024,
+    "raw_gib": 1024 / 1024**3,
+    "disk_required_bytes": 2 * 1024**3 + 1024,
+    "disk_free_bytes": 100 * 1024**3,
+}])
+def test_task_list_exposes_saved_capacity_snapshot(isolated_runner, plan):
+    web._tasks["capacity-task"] = {
+        "status": "done", "params": {"workflow": "points"}, "plan": plan,
+    }
+    response = isolated_runner.get("/api/tasks")
+    assert response.status_code == 200
+    task = response.get_json()[0]
+    for field in ("raw_bytes", "raw_gib", "disk_required_bytes", "disk_free_bytes"):
+        assert task[field] == (plan or {}).get(field)
 
 
 def test_plan_is_signed_one_time_and_queue_is_bounded(isolated_runner, monkeypatch):

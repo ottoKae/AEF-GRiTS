@@ -43,7 +43,7 @@ aef-grits-auth login \
   --auth-mode localhost \
   --project YOUR_GEE_PROJECT
 
-aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT
+aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT --check-aef
 ```
 
 远程SSH环境应由用户明确选择`gcloud`或`notebook`模式。ADC同样需要主动建立：

@@ -1,10 +1,5 @@
 #!/usr/bin/env python
-"""Submit one multi-year AlphaEarth table export per point chunk.
-
-Combining annual bands into one image avoids serializing the same local point
-FeatureCollection once per year.  Each exported CSV contains all requested
-annual 64-D groups and can be consumed by ``merge_aef_point_exports.py``.
-"""
+"""Inspect legacy Drive point plans; use stream_aef_points_ee for native sampling."""
 
 from __future__ import annotations
 
@@ -13,14 +8,7 @@ import json
 import math
 from pathlib import Path
 
-import ee
 import pandas as pd
-
-from aef_grits.earth_engine import initialize
-
-
-DATASET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
-AEF_BANDS = [f"A{i:02d}" for i in range(64)]
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,32 +32,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def annual_image(year: int, bounds: ee.Geometry) -> ee.Image:
-    names = [f"aef{year}_center_{band}" for band in AEF_BANDS]
-    return (
-        ee.ImageCollection(DATASET)
-        .filterDate(f"{year}-01-01", f"{year + 1}-01-01")
-        .filterBounds(bounds)
-        .select(AEF_BANDS)
-        .mosaic()
-        .rename(names)
-    )
-
-
-def build_features(frame: pd.DataFrame) -> ee.FeatureCollection:
-    return ee.FeatureCollection(
-        [
-            ee.Feature(
-                ee.Geometry.Point([float(row.lon), float(row.lat)], "EPSG:4326"),
-                {"sample_id": str(row.sample_id)},
-            )
-            for row in frame.itertuples(index=False)
-        ]
-    )
-
-
 def main() -> None:
     args = parse_args()
+    if not args.dry_run:
+        raise ValueError(
+            "Legacy Drive point sampling is retired because it does not preserve native pixels. "
+            "Use: python -m scripts.stream_aef_points_ee --samples INPUT "
+            "--years YEAR --out-dir NEW_DIRECTORY"
+        )
     if args.chunk_size <= 0:
         raise ValueError("--chunk-size must be positive")
     years = sorted(set(args.years))
@@ -95,60 +65,10 @@ def main() -> None:
         "drive_folder": args.folder,
         "prefix": args.prefix,
         "study_bounds": args.study_bounds,
+        "status": "legacy_plan_only_not_native_verified",
+        "replacement": "python -m scripts.stream_aef_points_ee",
     }
     print(json.dumps(plan, indent=2, ensure_ascii=False))
-    if args.dry_run:
-        return
-
-    _, resolved_auth = initialize(
-        args.project, auth_source=args.auth_source, return_auth=True
-    )
-    plan["authentication"] = resolved_auth.public_summary()
-    bounds = ee.Geometry.Rectangle(args.study_bounds, None, False)
-    image = ee.Image.cat([annual_image(year, bounds) for year in years])
-    selectors = [
-        "sample_id",
-        *[f"aef{year}_center_{band}" for year in years for band in AEF_BANDS],
-    ]
-    submitted = []
-    for chunk_id in selected:
-        start = (chunk_id - 1) * args.chunk_size
-        end = min(len(frame), chunk_id * args.chunk_size)
-        samples = build_features(frame.iloc[start:end])
-        extracted = image.sampleRegions(
-            collection=samples,
-            properties=["sample_id"],
-            scale=args.scale,
-            tileScale=args.tile_scale,
-            geometries=False,
-        )
-        name = f"{args.prefix}_part{chunk_id:03d}"
-        task = ee.batch.Export.table.toDrive(
-            collection=extracted,
-            description=name,
-            folder=args.folder,
-            fileNamePrefix=name,
-            fileFormat="CSV",
-            selectors=selectors,
-        )
-        task.start()
-        info = {
-            "chunk": chunk_id,
-            "description": name,
-            "task_id": task.id,
-            "start_row": start,
-            "end_row": end,
-            "row_count": end - start,
-        }
-        submitted.append(info)
-        print(f"[SUBMITTED] {name} rows={end-start} task_id={task.id}", flush=True)
-    args.log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = args.log_dir / f"{args.prefix}_submitted_tasks.json"
-    log_path.write_text(
-        json.dumps({**plan, "submitted_tasks": submitted}, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    print(f"Task log: {log_path}")
 
 
 if __name__ == "__main__":

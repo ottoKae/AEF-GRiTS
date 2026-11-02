@@ -18,6 +18,7 @@ Google Drive中转。
 - 支持CSV、Parquet、Shapefile、GeoPackage和GeoJSON点位输入。
 - 支持Tessera 0.1°、MGRS和参考栅格三种连续格网。
 - 10米float32 Zarr v3，采用无损Zstd-7/no-shuffle压缩。
+- 原生UTM像元采样，保存源资产版本与格网；支持年度GeoTIFF交付。
 - 有界内存与并发、请求deadline、错误分类、断点续传、原子元数据、磁盘保护和
   自动产物验证。
 - 提供点位、patch和窗口读取器，可直接用于训练和推理。
@@ -48,7 +49,7 @@ aef-grits-auth login \
   --auth-mode localhost \
   --project YOUR_GEE_PROJECT
 
-aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT
+aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT --check-aef
 aef-grits-doctor --auth-source auto --project YOUR_GEE_PROJECT --output ./outputs
 ```
 
@@ -79,6 +80,25 @@ aef-grits-points \
 结果为原子Parquet分片，并包含`catalog.parquet`和验证/报告JSON。大型输入采用
 流式预检和有界批量下载，不会整表载入内存。
 
+### 原生像元对齐
+
+新下载采用 `native-utm-v1`。WGS84 的 `lon,lat` 用来定位，特征取自该点所在的
+**原生 UTM 10米像元**。每年记录源资产、CRS、像元行列号和中心坐标；分片旁的
+`.native.json` 保存源版本和格网。点位优先使用当地UTM区；重叠来源也只在自身
+原生格网采样，并记录实际源CRS，不能默认它与任意指定UTM栅格相同。
+
+格网只使用与目标CRS、像元边界一致的源，不跨UTM填补，不接受非整数像元错位，
+缺测保留NaN。相反行序可无损重排；MGRS编号或0.1°选区本身不证明原生一致，
+与其他传感器融合前仍需比较具体格网。
+
+离线规划不等于已核验远端来源。正式下载先核验，并保存来源清单。
+**旧成果和检查点不能直接接续新协议，请使用新的输出目录。**已完成TIFF-only
+恢复只核对冻结的清单，不声称再次验证远端版本。旧Drive点位导出仅保留规划功能，
+请使用上面的直接下载命令。这里保证像元身份与float32取值，不保证源double编码逐位相同。
+
+详见[本次发布范围](docs/native-utm-release-20261102.md)及
+[真实数据验收报告](docs/native-alignment-implementation-20261101.zh-CN.md)。
+
 ## 连续格网下载
 
 ```bash
@@ -102,6 +122,12 @@ aef-grits-grid \
 每个grid ID对应一个Zarr，数据形状为`[year,64,y,x]`；chunks为
 `(1,64,64,64)`；shards为`(1,64,512,512)`；float32、Zstd level 7、
 no shuffle。
+
+使用 `--export-geotiff` 保留Zarr和年度64波段GeoTIFF，或 `--geotiff-only` 仅交付
+TIFF；两个参数互斥。TIFF保留float32、CRS、transform、波段名和NaN，使用无损DEFLATE，
+需要时采用BigTIFF。仅TIFF模式通过本任务专属临时Zarr下载，TIFF校验成功后才清理缓存；
+失败保留缓存，已有Zarr不会删除。峰值磁盘需同时容纳缓存和TIFF；两种TIFF模式均拒绝
+Linux NTFS目标。
 
 Linux NTFS/NTFS3只能接收已完成产物，活动状态和暂存必须位于ext4/XFS：
 
@@ -150,6 +176,16 @@ window = cube.read_window(0, 256, 0, 256, years=[2025])
 ```
 
 标准Zarr接口会读取压缩元数据并自动解压。
+
+仅TIFF成果请用QGIS或Rasterio读取；其catalog不是Zarr目录，不能传给
+`AEFZarr`或`AEFResolver`。
+
+## 用智能体调度下载
+
+仓库随附[下载skill](.agents/skills/aef-grits-download/SKILL.md)，指导本机或SSH任务
+规划、已有数据检查、有界执行和交付验收。向智能体说明执行位置、年份、点位/格网和
+输出目录；远端还需SSH别名、解释器与资源预算。skill随源码分发，不由Python wheel
+安装，也不会扩大授权范围、自动登录、删除旧数据或启动更大的下载。
 
 ## 根据AOI检索格网
 

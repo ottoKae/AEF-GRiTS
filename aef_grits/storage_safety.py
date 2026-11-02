@@ -364,6 +364,8 @@ def adopt_existing_store(
     expected_shape: tuple[int, int, int, int],
     state_dir: str | Path,
     timeout_seconds: float = 600.0,
+    native_source_signature: str | None = None,
+    validate_only: bool = False,
 ) -> None:
     """Validate/consolidate one legacy final store in an isolated process."""
     state_path = Path(state_dir)
@@ -378,6 +380,10 @@ def adopt_existing_store(
         "--shape",
         *(str(value) for value in expected_shape),
     ]
+    if native_source_signature is not None:
+        command.extend(["--native-source-signature", native_source_signature])
+    if validate_only:
+        command.append("--validate-only")
     process = subprocess.Popen(command, start_new_session=os.name == "posix")
     started = time.monotonic()
     while process.poll() is None:

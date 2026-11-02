@@ -265,7 +265,7 @@ def initialize(
 
 
 def annual_image(year: int, bounds=None, *, renamed: bool = False):
-    """Build one annual 64-band AEF mosaic."""
+    """Legacy unaligned mosaic for historical reproduction, not native download."""
     import ee
 
     collection = (
@@ -284,7 +284,7 @@ def annual_image(year: int, bounds=None, *, renamed: bool = False):
 
 
 def multiyear_image(years: Sequence[int], bounds=None):
-    """Concatenate annual mosaics into one uniquely named wide image."""
+    """Legacy unaligned multi-year image; production uses native_grid sources."""
     import ee
 
     normalized = sorted(set(int(year) for year in years))

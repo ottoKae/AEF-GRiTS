@@ -20,7 +20,7 @@ from .auth import (
     discover_credentials,
     earth_engine_credentials_path,
 )
-from .earth_engine import initialize
+from .earth_engine import DATASET, initialize
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,6 +44,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     verify.add_argument("--source", choices=AUTH_SOURCES, default="auto")
     verify.add_argument("--project")
     verify.add_argument("--json", action="store_true")
+    verify.add_argument("--check-aef", action="store_true", help="Also check access to the AEF collection")
 
     logout = subparsers.add_parser("logout", help="Explicitly revoke/remove one local source")
     logout.add_argument("--source", choices=("earthengine", "adc"), required=True)
@@ -126,10 +127,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "login":
             payload = _login(args)
         elif args.command == "verify":
-            _, resolved = initialize(
-                args.project, auth_source=args.source, return_auth=True
+            ee, resolved = initialize(
+                args.project, auth_source=args.source, return_auth=True,
+                request_timeout_seconds=30 if args.check_aef else 300,
             )
             payload = {"ok": True, "authentication": resolved.public_summary()}
+            if args.check_aef:
+                try:
+                    available = ee.ImageCollection(DATASET).limit(1).size().getInfo()
+                except Exception as exc:
+                    raise AuthenticationError(f"AEF collection verification failed: {exc}") from exc
+                if not available:
+                    raise AuthenticationError("The AEF collection returned no images")
+                payload["aef_available"] = True
         elif args.command == "logout":
             payload = _logout(args)
         else:

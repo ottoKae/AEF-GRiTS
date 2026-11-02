@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import sys
 
+from affine import Affine
 import ee
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from aef_grits.grids import AEF_RESOLUTION_M, ReferenceGridProvider
 from aef_grits.earth_engine import initialize
+from aef_grits.native_grid import NATIVE_PROTOCOL, iter_native_sources, native_grid_image
 
 
 AEF_ASSET = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
@@ -80,20 +82,15 @@ def existing_descriptions() -> set[str]:
     }
 
 
-def annual_image(year: int, region: ee.Geometry) -> tuple[ee.Image, int]:
-    collection = (
-        ee.ImageCollection(AEF_ASSET)
-        .filterDate(f"{year}-01-01", f"{year + 1}-01-01")
-        .filterBounds(region)
+def annual_image(year: int, region: ee.Geometry, grid: dict) -> tuple[ee.Image, dict]:
+    sources = iter_native_sources(ee, year, region, lambda _label, action: action())
+    image, manifest = native_grid_image(
+        ee, sources, grid["crs"], Affine(*grid["crs_transform"])
     )
-    count = int(collection.size().getInfo())
-    if count == 0:
-        raise ValueError(f"no AEF imagery intersects the reference grid for {year}")
-    image = collection.mosaic().select(AEF_BANDS).toFloat()
     # Preserve a rectangular, fixed grid. Masked source pixels are encoded as
     # explicit nodata so rasterio/GDAL can validate all 64 bands consistently.
     image = image.unmask(NODATA, sameFootprint=False).clip(region)
-    return image, count
+    return image, manifest
 
 
 def main() -> None:
@@ -110,6 +107,8 @@ def main() -> None:
         "bands": AEF_BANDS,
         "dtype": "float32",
         "nodata": NODATA,
+        "native_protocol": NATIVE_PROTOCOL,
+        "native_alignment_status": "unverified_offline_plan",
         "years": years,
         "drive_folder": args.folder,
         "prefix": args.prefix,
@@ -138,7 +137,8 @@ def main() -> None:
                 f"Earth Engine already has an operation named {description}; "
                 "refusing a duplicate submission"
             )
-        image, source_tiles = annual_image(year, region)
+        image, manifest = annual_image(year, region, grid)
+        source_tiles = len(manifest["sources"])
         task = ee.batch.Export.image.toDrive(
             image=image,
             description=description,
@@ -158,6 +158,7 @@ def main() -> None:
             "description": description,
             "task_id": task.id,
             "source_tiles": source_tiles,
+            "source_manifest": manifest,
         }
         submitted.append(record)
         print(
@@ -167,6 +168,7 @@ def main() -> None:
 
     payload = {
         **plan,
+        "native_alignment_status": "verified_source_grids",
         "authentication": resolved_auth.public_summary(),
         "tasks": submitted,
     }

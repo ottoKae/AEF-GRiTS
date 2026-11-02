@@ -40,7 +40,6 @@ from aef_grits.earth_engine import (  # noqa: E402
     EarthEngineRequestError,
     EarthEngineResponseError,
     RequestPolicy,
-    annual_image,
     execute_with_retry,
     initialize,
 )
@@ -50,6 +49,12 @@ from aef_grits.grids import (  # noqa: E402
     MGRSGridProvider,
     ReferenceGridProvider,
     Tessera01GridProvider,
+)
+from aef_grits.native_grid import (  # noqa: E402
+    NATIVE_PROTOCOL,
+    iter_native_sources,
+    manifest_signature,
+    native_grid_image,
 )
 from aef_grits.resource_budget import (  # noqa: E402
     DEFAULT_GLOBAL_REQUESTS,
@@ -96,6 +101,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--out-dir", type=Path)
+    formats = parser.add_mutually_exclusive_group()
+    formats.add_argument("--export-geotiff", action="store_true",
+                         help="Also write one lossless 64-band GeoTIFF per year; retain Zarr for resume")
+    formats.add_argument("--geotiff-only", action="store_true",
+                         help="Deliver only GeoTIFF and metadata; remove the task-owned Zarr cache after validation")
     parser.add_argument("--tile-id")
     parser.add_argument(
         "--tessera-tile",
@@ -274,6 +284,7 @@ def _signature(
     block_size: int,
     inner_chunk: int,
     shard_size: int,
+    native_manifest: dict,
 ) -> str:
     payload = {
         "dataset": DATASET,
@@ -284,6 +295,8 @@ def _signature(
         "transform": list(grid["transform"])[:6],
         "width": grid["width"],
         "height": grid["height"],
+        "native_protocol": NATIVE_PROTOCOL,
+        "native_source_signature": native_manifest["signature"],
         "block_size": block_size,
         "inner_chunk": inner_chunk,
         "shard_size": shard_size,
@@ -296,6 +309,41 @@ def _signature(
         },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _prepare_native_grid(args, years, grid, ee, request_pool, telemetry):
+    xmin, ymin, xmax, ymax = grid["bounds"]
+    bounds = ee.Geometry.Rectangle(
+        [xmin, ymin, xmax, ymax], proj=grid["crs"], geodesic=False
+    )
+
+    def request(label, operation):
+        def fetch():
+            with telemetry.request_token(request_pool):
+                return operation()
+
+        def record_event(event, payload):
+            telemetry.request_event(event, payload)
+            emit_event(event, workflow="grid", **payload)
+
+        return execute_with_retry(
+            label, fetch,
+            RequestPolicy(
+                timeout_seconds=getattr(args, "request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
+                max_retries=args.max_retries,
+            ),
+            event=record_event,
+        )
+
+    images, annual_manifests = {}, {}
+    for year in years:
+        sources = list(iter_native_sources(ee, year, bounds, request))
+        image, manifest = native_grid_image(ee, sources, grid["crs"], grid["transform"])
+        images[year] = image.unmask(NODATA, sameFootprint=False)
+        annual_manifests[str(year)] = manifest
+    payload = {"protocol": NATIVE_PROTOCOL, "years": annual_manifests}
+    manifest = {**payload, "signature": manifest_signature(payload)}
+    return images, manifest
 
 
 def _block_specs(grid: dict, years: list[int], block_size: int):
@@ -488,12 +536,18 @@ def _create_store(
     signature: str,
     inner_chunk: int,
     shard_size: int,
+    native_manifest: dict | None = None,
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         group = zarr.open_group(str(path), mode="r+", zarr_format=3, use_consolidated=False)
         if group.attrs.get("aef:signature") != signature:
             raise ValueError("Existing Zarr signature differs; select a new output path")
+        if native_manifest is not None and (
+            group.attrs.get("aef:native_protocol") != NATIVE_PROTOCOL
+            or group.attrs.get("aef:native_source_manifest") != native_manifest
+        ):
+            raise ValueError("Existing Zarr lacks matching native-source provenance; use a new output path")
         expected = (len(years), len(AEF_BANDS), grid["height"], grid["width"])
         if tuple(group["embeddings"].shape) != expected:
             raise ValueError("Existing Zarr array shape differs from the requested grid")
@@ -562,6 +616,12 @@ def _create_store(
             "bands": list(AEF_BANDS),
         }
     )
+    if native_manifest is not None:
+        group.attrs.update({
+            "aef:native_protocol": NATIVE_PROTOCOL,
+            "aef:native_source_signature": native_manifest["signature"],
+            "aef:native_source_manifest": native_manifest,
+        })
     return group
 
 
@@ -595,6 +655,7 @@ def _stream_one(
     request_pool=None,
     resource_root=None,
     telemetry=None,
+    prepared_native=None,
 ) -> dict:
     grid = grid_spec.as_dict()
     if resource_plan is None:
@@ -612,6 +673,15 @@ def _stream_one(
             name="request",
         )
     request_bytes = args.block_size**2 * len(AEF_BANDS) * BYTES_PER_VALUE
+    telemetry = telemetry or RunTelemetry()
+    images, native_manifest = prepared_native or _prepare_native_grid(
+        args, years, grid, ee, request_pool, telemetry
+    )
+    native_provenance = {
+        "native_protocol": NATIVE_PROTOCOL,
+        "native_source_signature": native_manifest["signature"],
+        "native_source_manifest": native_manifest,
+    }
     signature = _signature(
         grid,
         years,
@@ -619,6 +689,7 @@ def _stream_one(
         block_size=args.block_size,
         inner_chunk=args.inner_chunk,
         shard_size=args.shard_size,
+        native_manifest=native_manifest,
     )
     grid_state = state_root / "grids" / grid_spec.grid_id
     grid_state.mkdir(parents=True, exist_ok=True)
@@ -637,14 +708,22 @@ def _stream_one(
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         if progress.get("signature") != signature:
             raise ValueError("Progress signature differs; use a new output path")
+        if progress.get("native_source_manifest") != native_manifest:
+            raise ValueError("Progress lacks matching native-source provenance; use a new output path")
     else:
         progress = {"signature": signature, "completed": [], "delivery_status": "staging"}
     completed = set(progress.get("completed", []))
+    valid_pixels = {str(year): int(progress.get("valid_pixels_by_year", {}).get(str(year), 0)) for year in years}
     memory_guard = MemoryGuard(resource_plan)
-    telemetry = telemetry or RunTelemetry()
     all_blocks = list(_block_specs(grid, years, args.block_size))
     already_committed = progress.get("delivery_status") == "committed"
     if already_committed:
+        adopt_existing_store(
+            output, signature=signature,
+            expected_shape=(len(years), len(AEF_BANDS), grid["height"], grid["width"]),
+            state_dir=grid_state, timeout_seconds=min(args.commit_timeout, 600.0),
+            native_source_signature=native_manifest["signature"], validate_only=True,
+        )
         completed = {block["key"] for block in all_blocks}
     work_output = (
         staging_root / grid_spec.grid_id / output.name
@@ -664,6 +743,7 @@ def _stream_one(
             expected_shape=(len(years), len(AEF_BANDS), grid["height"], grid["width"]),
             state_dir=grid_state,
             timeout_seconds=min(args.commit_timeout, 600.0),
+            native_source_signature=native_manifest["signature"],
         )
         already_committed = True
         adopting = True
@@ -674,7 +754,6 @@ def _stream_one(
             "--adopt-existing-complete only for a fully completed legacy store."
         )
     target = None
-    images = {}
     if not already_committed:
         store = _create_store(
             work_output,
@@ -683,16 +762,9 @@ def _stream_one(
             signature,
             args.inner_chunk,
             args.shard_size,
+            native_manifest,
         )
         target = store["embeddings"]
-        xmin, ymin, xmax, ymax = grid["bounds"]
-        bounds = ee.Geometry.Rectangle(
-            [xmin, ymin, xmax, ymax], proj=grid["crs"], geodesic=False
-        )
-        images = {
-            year: annual_image(year, bounds).unmask(NODATA, sameFootprint=False)
-            for year in years
-        }
     pending = [block for block in all_blocks if block["key"] not in completed]
     print(
         json.dumps(
@@ -724,6 +796,8 @@ def _stream_one(
                 write_json(
                     {
                         "signature": signature,
+                        **native_provenance,
+                        "valid_pixels_by_year": valid_pixels,
                         "completed": sorted(completed),
                         "delivery_status": "staging",
                         "working_store": str(work_output),
@@ -775,12 +849,15 @@ def _stream_one(
                         column : column + block["width"],
                     ] = values
                 completed.add(block["key"])
+                valid_pixels[str(block["year"])] += int(np.isfinite(values).all(axis=0).sum())
                 written += 1
                 since_checkpoint += 1
                 if since_checkpoint >= args.checkpoint_every:
                     write_json(
                         {
                             "signature": signature,
+                            **native_provenance,
+                            "valid_pixels_by_year": valid_pixels,
                             "completed": sorted(completed),
                             "delivery_status": "staging",
                             "working_store": str(work_output),
@@ -812,6 +889,8 @@ def _stream_one(
     write_json(
         {
             "signature": signature,
+            **native_provenance,
+            "valid_pixels_by_year": valid_pixels,
             "completed": sorted(completed),
             "delivery_status": "staging",
             "working_store": str(work_output),
@@ -823,9 +902,12 @@ def _stream_one(
         raise RuntimeError("Run ended before every block was committed")
 
     if not already_committed:
+        store.attrs.update({"aef:valid_pixels_by_year": valid_pixels,
+                            "aef:total_pixels_per_year": grid["width"] * grid["height"]})
         zarr.consolidate_metadata(str(work_output))
     completion = {
         "signature": signature,
+        **native_provenance,
         "grid_id": grid_spec.grid_id,
         "blocks": len(all_blocks),
         "years": years,
@@ -850,6 +932,8 @@ def _stream_one(
     write_json(
         {
             "signature": signature,
+            **native_provenance,
+            "valid_pixels_by_year": valid_pixels,
             "completed": sorted(completed),
             "delivery_status": "committed",
             "legacy_adopted": adopting or bool(progress.get("legacy_adopted")),
@@ -881,11 +965,20 @@ def _stream_one(
         "dtype": "float32",
         "status": "complete",
         "signature": signature,
+        "native_protocol": NATIVE_PROTOCOL,
+        "native_source_signature": native_manifest["signature"],
+        "native_source_manifest": json.dumps(native_manifest, sort_keys=True),
+        "valid_pixels_by_year": json.dumps(valid_pixels, sort_keys=True),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     _save_catalog(catalog_path, record)
     report = {
         **record,
+        **native_provenance,
+        "native_alignment_status": "newly_validated",
+        "valid_pixels_by_year": valid_pixels,
+        "total_pixels_per_year": grid["width"] * grid["height"],
+        "valid_fraction_by_year": {year: count / (grid["width"] * grid["height"]) for year, count in valid_pixels.items()},
         "blocks": len(all_blocks),
         "elapsed_seconds": time.perf_counter() - started,
         "catalog": str(catalog_path.resolve()),
@@ -923,6 +1016,11 @@ def _stream_one(
 
 def main() -> None:
     args = parse_args()
+    output_format = "geotiff" if args.geotiff_only else "zarr+geotiff" if args.export_geotiff else "zarr"
+    if args.geotiff_only and (args.out is not None or args.out_dir is None):
+        raise ValueError("--geotiff-only requires --out-dir, not --out")
+    if args.geotiff_only and (args.staging_dir or args.import_legacy_progress or args.adopt_existing_complete):
+        raise ValueError("TIFF-only uses its own resumable cache; omit staging and legacy-adoption options")
     profile = resolve_resource_profile(
         args.resource_profile,
         memory_limit_gib=args.memory_limit_gib,
@@ -981,6 +1079,8 @@ def main() -> None:
         args.staging_dir,
     )
     state_root = Path(layout.state_root)
+    if output_format != "zarr" and layout.final_mount and layout.final_mount.is_linux_ntfs:
+        raise ValueError("GeoTIFF export requires a native Linux filesystem, not NTFS output")
     staging_root = Path(layout.staging_root) if layout.staging_root else None
     resource_root = args.resource_state_dir or default_resource_root(state_root)
     resource_root = Path(resource_root).expanduser().absolute()
@@ -1011,6 +1111,8 @@ def main() -> None:
             "scheme": args.grid_scheme,
             "project_configured": bool(args.project or os.environ.get("AEF_GRITS_PROJECT")),
             "years": years,
+            "native_protocol": NATIVE_PROTOCOL,
+            "native_alignment_status": "unverified_offline_plan",
             "grid_count": len(grids),
             "grids": [
                 {
@@ -1018,12 +1120,15 @@ def main() -> None:
                     "crs": grid.crs,
                     "width": grid.width,
                     "height": grid.height,
-                    "output": str(outputs[grid.grid_id].resolve()),
+                    "output": str((outputs[grid.grid_id].with_suffix(".geotiff") if args.geotiff_only else outputs[grid.grid_id]).resolve()),
                 }
                 for grid in grids
             ],
             "raw_bytes": raw_bytes,
             "raw_gib": raw_bytes / 1024**3,
+            "output_format": output_format,
+            "delivery_raw_bytes": raw_bytes * (2 if output_format != "zarr" else 1),
+            "temporary_zarr": args.geotiff_only,
             "free_bytes": free_bytes,
             "free_gib": free_bytes / 1024**3,
             "storage_layout": layout.as_dict(),
@@ -1044,22 +1149,75 @@ def main() -> None:
         }
         print(json.dumps(plan, indent=2))
         return
-    try:
-        ee, resolved_auth = initialize(
-            args.project,
-            auth_source=args.auth_source,
-            high_volume=args.high_volume,
-            request_timeout_seconds=args.request_timeout_seconds,
-            return_auth=True,
-        )
-    except AuthenticationError as exc:
-        emit_event("auth_required", error_type=type(exc).__name__, error=str(exc))
-        raise
-    emit_event("auth_ready", **resolved_auth.public_summary())
+    work_catalog = catalog_path
+    work_state = state_root
+    tiff_signature = None
+    prepared_native = {}
+    run_telemetry = RunTelemetry()
+    completed_tiff = args.geotiff_only and (final_root / "geotiff_manifest.json").exists()
+    if args.geotiff_only:
+        if state_root.resolve().is_relative_to(final_root.resolve() / ".aef-geotiff-work"):
+            raise ValueError("The final TIFF state directory must be outside the temporary cache")
+        if any(path.exists() for path in outputs.values()):
+            raise FileExistsError("Existing permanent Zarr data will not be removed; choose a new TIFF-only output directory")
+    if not completed_tiff:
+        try:
+            ee, resolved_auth = initialize(
+                args.project,
+                auth_source=args.auth_source,
+                high_volume=args.high_volume,
+                request_timeout_seconds=args.request_timeout_seconds,
+                return_auth=True,
+            )
+        except AuthenticationError as exc:
+            emit_event("auth_required", error_type=type(exc).__name__, error=str(exc))
+            raise
+        emit_event("auth_ready", **resolved_auth.public_summary())
+    if args.geotiff_only:
+        from aef_grits.geotiff import prepare_tiff_work, finish_tiff_only
+
+        if completed_tiff:
+            # Final delivery can finish cache cleanup offline, using its frozen source evidence.
+            delivery = json.loads((final_root / "geotiff_manifest.json").read_text(encoding="utf-8"))
+            native_manifests = {row["grid_id"]: row.get("native_source_manifest", {}) for row in delivery["grids"]}
+            if set(native_manifests) != {grid.grid_id for grid in grids}:
+                raise ValueError("GeoTIFF grids differ from this request; use a new output directory")
+            for manifest in native_manifests.values():
+                payload = {key: value for key, value in manifest.items() if key != "signature"}
+                if (manifest.get("protocol") != NATIVE_PROTOCOL
+                        or manifest.get("signature") != manifest_signature(payload)
+                        or set(manifest.get("years", {})) != {str(year) for year in years}):
+                    raise ValueError("Completed GeoTIFF lacks verified native-source provenance; use a new output directory")
+        else:
+            for grid in grids:
+                prepared_native[grid.grid_id] = _prepare_native_grid(
+                    args, years, grid.as_dict(), ee, request_pool, run_telemetry
+                )
+            native_manifests = {key: value[1] for key, value in prepared_native.items()}
+        signatures = {grid.grid_id: _signature(
+            grid.as_dict(), years, grid.grid_id, block_size=args.block_size,
+            inner_chunk=args.inner_chunk, shard_size=args.shard_size,
+            native_manifest=native_manifests[grid.grid_id],
+        ) for grid in grids}
+        tiff_signature = hashlib.sha256(json.dumps(signatures, sort_keys=True).encode()).hexdigest()
+        cache = prepare_tiff_work(final_root, catalog_path, tiff_signature)
+        if (final_root / "geotiff_manifest.json").exists():
+            finish_tiff_only(final_root, catalog_path, tiff_signature)
+            summary_path = state_root / "run_summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+            summary.update(scheme=args.grid_scheme, requested=len(grids), completed=len(grids), failed=[],
+                           catalog=str(catalog_path.resolve()), output_format="geotiff", geotiff_status="complete",
+                           native_protocol=NATIVE_PROTOCOL,
+                           native_alignment_status="completed_frozen_manifest")
+            write_json(summary, summary_path)
+            emit_event("run_complete", workflow="grid", completed=len(grids), total=len(grids))
+            return
+        outputs = {grid_id: cache / path.resolve().relative_to(final_root.resolve()) for grid_id, path in outputs.items()}
+        work_catalog = cache / "catalog.parquet"
+        work_state = cache / "state"
     reports = []
     failures = []
     resumable_failure = None
-    run_telemetry = RunTelemetry()
     for index, grid in enumerate(grids, 1):
         print(f"Grid {index}/{len(grids)}: {grid.scheme}/{grid.grid_id}", flush=True)
         emit_event(
@@ -1076,14 +1234,15 @@ def main() -> None:
                 years,
                 grid,
                 outputs[grid.grid_id],
-                catalog_path,
-                state_root,
+                work_catalog,
+                work_state,
                 staging_root,
                 ee,
                 resource_plan,
                 request_pool,
                 resource_root,
                 run_telemetry,
+                prepared_native.get(grid.grid_id),
             )
             reports.append(report)
             emit_event(
@@ -1100,6 +1259,7 @@ def main() -> None:
             print(f"Grid failed: {grid.grid_id}: {exc}", file=sys.stderr, flush=True)
     summary = {
         "scheme": args.grid_scheme,
+        "native_protocol": NATIVE_PROTOCOL,
         "requested": len(grids),
         "completed": len(reports),
         "failed": failures,
@@ -1122,12 +1282,29 @@ def main() -> None:
     summary["resource_profile"] = profile
     summary["telemetry"] = run_telemetry.report()
     summary["resource_state_dir"] = str(resource_root)
+    summary["output_format"] = output_format
+    summary["geotiff_status"] = "pending" if output_format != "zarr" else "not_requested"
     write_json(summary, state_root / "run_summary.json")
-    emit_event("run_complete", workflow="grid", completed=len(reports), total=len(grids))
     if resumable_failure is not None:
         raise resumable_failure
     if failures:
         raise RuntimeError(f"{len(failures)} of {len(grids)} grids failed")
+    if output_format != "zarr":
+        from aef_grits.geotiff import export_catalog
+        emit_event("geotiff_start", workflow="grid")
+        try:
+            export_catalog(work_catalog, final_root, grid_ids=[grid.grid_id for grid in grids],
+                           retain_zarr=not args.geotiff_only, request_signature=tiff_signature)
+            if args.geotiff_only:
+                finish_tiff_only(final_root, catalog_path, tiff_signature)
+        except Exception as exc:
+            summary["geotiff_status"] = "failed"
+            summary["failed"].append({"stage": "geotiff", "error": str(exc)})
+            write_json(summary, state_root / "run_summary.json")
+            raise
+        summary["geotiff_status"] = "complete"
+        write_json(summary, state_root / "run_summary.json")
+    emit_event("run_complete", workflow="grid", completed=len(reports), total=len(grids))
 
 
 if __name__ == "__main__":

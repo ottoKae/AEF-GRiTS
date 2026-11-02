@@ -18,6 +18,7 @@ Dataset: `GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`, bands `A00`–`A63`, years
 - CSV, Parquet, Shapefile, GeoPackage, and GeoJSON point inputs.
 - Tessera 0.1°, MGRS, and reference-raster dense grids.
 - 10 m float32 Zarr v3 with lossless Zstd-7/no-shuffle compression.
+- Native UTM pixel sampling with versioned source manifests; optional annual GeoTIFF delivery.
 - Bounded memory/concurrency, request deadlines, classified retry, checkpoints,
   atomic metadata, storage guards, and product validation.
 - Point/patch/window readers for model training and inference.
@@ -48,7 +49,7 @@ aef-grits-auth login \
   --auth-mode localhost \
   --project YOUR_GEE_PROJECT
 
-aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT
+aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT --check-aef
 aef-grits-doctor --auth-source auto --project YOUR_GEE_PROJECT --output ./outputs
 ```
 
@@ -83,6 +84,29 @@ aef-grits-points \
 Results are atomic Parquet shards with `catalog.parquet` and validation/report
 JSON. Large sources are preflighted and downloaded in bounded batches.
 
+### Native pixel alignment
+
+New downloads use `native-utm-v1`. WGS84 `lon,lat` locate a point; its feature
+vector comes from the containing **native UTM 10 m pixel**. Each year records the
+source asset, CRS, pixel row/column and centre; `.native.json` freezes source
+versions and grids. Points prefer their local UTM zone; overlapping fallback
+sources are sampled only in their own native grid, recorded in the output.
+
+Dense downloads accept only sources sharing the target CRS and pixel boundaries.
+Cross-UTM filling and fractionally shifted reference grids are rejected; missing
+pixels remain NaN. Reversing row order is lossless. MGRS and 0.1° are selection
+and storage units, not proof of alignment with another sensor.
+
+Offline plans do not verify remote alignment. Downloads verify sources before
+writing and retain their manifests. **Old products/checkpoints cannot be resumed
+under this protocol: use a new output directory.** Completed TIFF-only recovery
+checks frozen manifests offline, not current remote versions. The legacy Drive
+point exporter now supports planning only; use the direct point command above.
+The guarantee is pixel identity at float32 precision, not source double encoding.
+
+See the [release scope](docs/native-utm-release-20261102.md) and
+[real-data validation report](docs/native-alignment-implementation-20261101.zh-CN.md).
+
 ## Dense grid download
 
 ```bash
@@ -106,6 +130,13 @@ aef-grits-grid \
 Each grid ID becomes one Zarr store with shape
 `[year, 64, y, x]`, chunks `(1,64,64,64)`, shards `(1,64,512,512)`, float32,
 Zstd level 7, and no shuffle.
+
+Use `--export-geotiff` for Zarr plus annual 64-band GeoTIFF, or `--geotiff-only`
+for TIFF delivery. The flags are mutually exclusive. TIFFs preserve float32,
+CRS, transform, band names and NaN, with lossless DEFLATE and BigTIFF when needed.
+TIFF-only downloads through a task-owned temporary Zarr, removed only after TIFF
+validation. Failures retain the cache; existing Zarr products are not deleted.
+Budget for cache and TIFF together. Both TIFF modes reject Linux NTFS destinations.
 
 For Linux NTFS/NTFS3 destinations, active state and staging must remain on
 ext4/XFS; NTFS receives only completed products:
@@ -157,6 +188,18 @@ window = cube.read_window(0, 256, 0, 256, years=[2025])
 
 The standard Zarr API detects compression metadata and decompresses reads
 automatically.
+
+Read TIFF-only products with QGIS or Rasterio. Their catalogs are not Zarr catalogs
+and must not be passed to `AEFZarr` or `AEFResolver`.
+
+## Agent-assisted downloads
+
+The repository-owned [download skill](.agents/skills/aef-grits-download/SKILL.md)
+guides local or SSH planning, existing-data checks, bounded execution and delivery
+verification. Tell your agent the host, years, sample/grid selection and output
+directory; remote jobs also need an SSH alias, interpreter and resource budget.
+The skill is included in the source repository, not installed by the Python wheel.
+It does not authorize automatic login, deletion or larger downloads.
 
 ## AOI to grid IDs
 

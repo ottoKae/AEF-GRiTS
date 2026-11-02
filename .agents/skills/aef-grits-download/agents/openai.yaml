@@ -1,0 +1,4 @@
+interface:
+  display_name: "AEF-GRiTS downloads"
+  short_description: "Plan and operate local or SSH AEF downloads"
+  default_prompt: "Use $aef-grits-download to plan and operate my authorized AEF task locally or over SSH, then verify and report the delivered data."

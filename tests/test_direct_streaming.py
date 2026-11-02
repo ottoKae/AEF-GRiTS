@@ -316,7 +316,7 @@ def test_local_store_samples_centred_patches_with_edge_padding(tmp_path):
         )
 
 
-def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, monkeypatch):
+def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, monkeypatch, native_grid_sources):
     grid = GridSpec(
         scheme="reference",
         grid_id="TEST",
@@ -347,7 +347,7 @@ def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, 
             }
 
     fake_ee = SimpleNamespace(Geometry=FakeGeometry, data=FakeData)
-    monkeypatch.setattr(grid_stream, "annual_image", lambda *args, **kwargs: FakeImage())
+    native_grid_sources(fake_ee, grid.as_dict(), [2025], lambda year: FakeImage())
     args = SimpleNamespace(
         block_size=8,
         inner_chunk=4,
@@ -380,6 +380,8 @@ def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, 
     progress = json.loads(Path(report["progress"]).read_text(encoding="utf-8"))
     assert progress["delivery_status"] == "committed"
     assert len(progress["completed"]) == 4
+    assert progress["valid_pixels_by_year"] == {"2025": 256}
+    assert report["valid_fraction_by_year"] == {"2025": 1.0}
     array = zarr.open_group(str(final), mode="r")["embeddings"]
     assert array.shape == (1, 64, 16, 16)
     assert np.isfinite(array[:]).all()
@@ -398,9 +400,10 @@ def test_grid_stream_stages_then_delivers_with_external_control_state(tmp_path, 
         fake_ee,
     )
     assert adopted["adopted_legacy_store"] is True
+    assert adopted["valid_pixels_by_year"] == {"2025": 256}
 
 
-def test_grid_pipeline_keeps_1024_fetches_bounded(tmp_path, monkeypatch, capsys):
+def test_grid_pipeline_keeps_1024_fetches_bounded(tmp_path, monkeypatch, capsys, native_grid_sources):
     grid = GridSpec(
         scheme="reference",
         grid_id="STRESS",
@@ -444,7 +447,7 @@ def test_grid_pipeline_keeps_1024_fetches_bounded(tmp_path, monkeypatch, capsys)
             return response
 
     fake_ee = SimpleNamespace(Geometry=FakeGeometry, data=FakeData)
-    monkeypatch.setattr(grid_stream, "annual_image", lambda *args, **kwargs: FakeImage())
+    native_grid_sources(fake_ee, grid.as_dict(), [2025], lambda year: FakeImage())
     args = SimpleNamespace(
         block_size=8,
         inner_chunk=8,

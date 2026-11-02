@@ -38,13 +38,17 @@ from aef_grits.earth_engine import (  # noqa: E402
     execute_with_retry,
     feature_columns,
     initialize,
-    multiyear_image,
+)
+from aef_grits.grids import utm_epsg_for_lonlat  # noqa: E402
+from aef_grits.native_grid import (  # noqa: E402
+    NATIVE_PROTOCOL, iter_native_sources, manifest_signature, source_manifest,
 )
 from aef_grits.points import (  # noqa: E402
     raise_for_invalid_points,
 )
 from aef_grits.point_source import (  # noqa: E402
     PointSource,
+    native_point_locations,
     point_run_signature,
     preflight_point_source,
 )
@@ -69,6 +73,7 @@ EVENT_PREFIX = "AEF_EVENT "
 DEFAULT_OUTPUT_ROOT = Path(
     os.environ.get("AEF_GRITS_OUTPUT_ROOT", str(Path.cwd() / "outputs"))
 ).expanduser()
+PROVENANCE_FIELDS = ("asset", "crs", "column", "row", "center_x", "center_y")
 
 
 def emit_event(event: str, **payload) -> None:
@@ -180,49 +185,91 @@ def _request_chunk(
     request_pool,
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     telemetry: RunTelemetry | None = None,
+    metadata_only: bool = False,
 ) -> pd.DataFrame:
-    bounds = _bounds(ee, frame)
-    image = multiyear_image(years, bounds)
-    features = ee.FeatureCollection(
-        [
-            ee.Feature(
-                ee.Geometry.Point([float(row.lon), float(row.lat)], "EPSG:4326"),
-                {"sample_id": str(row.sample_id)},
-            )
-            for row in frame.itertuples(index=False)
-        ]
-    )
-    sampled = image.sampleRegions(
-        collection=features,
-        properties=["sample_id"],
-        scale=scale,
-        tileScale=tile_scale,
-        geometries=False,
-    )
-    def request():
-        token_context = telemetry.request_token(request_pool) if telemetry else request_pool.token()
-        with token_context:
-            return ee.data.computeFeatures(
-                {
-                    "expression": sampled,
-                    "fileFormat": "PANDAS_DATAFRAME",
-                    "pageSize": page_size,
-                    "workloadTag": "aef_grits_points",
-                }
-            )
+    def request(operation, function):
+        def attempt():
+            token = telemetry.request_token(request_pool) if telemetry else request_pool.token()
+            with token:
+                return function()
+        return execute_with_retry(
+            operation, attempt,
+            RequestPolicy(timeout_seconds=request_timeout_seconds, max_retries=max_retries),
+            event=lambda name, payload: (
+                telemetry.request_event(name, payload) if telemetry else None,
+                emit_event(name, workflow="points", **payload),
+            ),
+        )
 
-    return execute_with_retry(
-        "computeFeatures",
-        request,
-        RequestPolicy(
-            timeout_seconds=request_timeout_seconds,
-            max_retries=max_retries,
-        ),
-        event=lambda name, payload: (
-            telemetry.request_event(name, payload) if telemetry else None,
-            emit_event(name, workflow="points", **payload),
-        ),
-    )
+    frame = frame.reset_index(drop=True)
+    geometry = ee.Geometry.MultiPoint(frame[["lon", "lat"]].astype(float).values.tolist(), "EPSG:4326")
+    local_crs = np.asarray([f"EPSG:{utm_epsg_for_lonlat(row.lon, row.lat)}"
+                            for row in frame.itertuples(index=False)])
+    result = pd.DataFrame(np.nan, index=frame.index, columns=feature_columns(years), dtype=np.float32)
+    result.insert(0, "sample_id", frame.sample_id.astype(str))
+    sources = []
+    for year in years:
+        annual = feature_columns([year])
+        prefix = f"aef{year}_source_"
+        for name in ("asset", "crs"):
+            result[prefix + name] = pd.Series(pd.NA, index=frame.index, dtype="string")
+        for name in ("column", "row"):
+            result[prefix + name] = pd.Series(pd.NA, index=frame.index, dtype="Int64")
+        for name in ("center_x", "center_y"):
+            result[prefix + name] = np.nan
+        best_priority = np.full(len(frame), 2, dtype=np.int8)
+        for source in iter_native_sources(ee, year, geometry, request):
+            sources.append(source)
+            if metadata_only:
+                continue
+            priority = (local_crs != source.crs).astype(np.int8)
+            candidates = frame.loc[priority < best_priority]
+            if candidates.empty:
+                continue
+            locations = native_point_locations(candidates, source)
+            if locations.empty:
+                continue
+            features = ee.FeatureCollection([
+                ee.Feature(ee.Geometry.Point([row.center_x, row.center_y], source.crs),
+                           {"sample_id": row.sample_id})
+                for row in locations.itertuples(index=False)
+            ])
+            image = source.image(ee).rename(annual)
+            sampled = image.sampleRegions(
+                collection=features, properties=["sample_id"],
+                projection=ee.Projection(source.crs, list(source.transform)[:6]),
+                tileScale=tile_scale, geometries=False,
+            )
+            remote = request("computeFeatures", lambda: ee.data.computeFeatures({
+                "expression": sampled, "fileFormat": "PANDAS_DATAFRAME",
+                "pageSize": page_size, "workloadTag": "aef_grits_points",
+            }))
+            if remote.empty:
+                continue
+            remote["sample_id"] = remote.sample_id.astype(str)
+            if remote.sample_id.duplicated().any():
+                raise ValueError("Earth Engine returned duplicate sample_id values")
+            if not set(annual).issubset(remote.columns):
+                raise ValueError(f"Earth Engine source {source.id} lacks annual AEF bands")
+            if not remote.sample_id.isin(locations.sample_id).all():
+                raise ValueError("Earth Engine returned an unrequested sample_id")
+            remote = remote.loc[np.isfinite(remote[annual].to_numpy()).all(axis=1)].set_index("sample_id")
+            selected = locations.loc[locations.sample_id.isin(remote.index)]
+            if selected.empty:
+                continue
+            result.loc[selected.index, annual] = remote.loc[selected.sample_id, annual].to_numpy(dtype=np.float32)
+            result.loc[selected.index, prefix + "asset"] = source.id
+            result.loc[selected.index, prefix + "crs"] = source.crs
+            for name in ("column", "row", "center_x", "center_y"):
+                result.loc[selected.index, prefix + name] = selected[name].to_numpy()
+            best_priority[selected.index] = priority[selected.index]
+    manifest = source_manifest(sources)
+    manifest.pop("signature")
+    manifest["years"] = years
+    manifest["priority"] = "local_utm_then_ascending_asset_id_first_complete_vector"
+    manifest["signature"] = manifest_signature(manifest)
+    result.attrs["native_manifest"] = manifest
+    return result
 
 
 def _complete_chunk(
@@ -236,22 +283,29 @@ def _complete_chunk(
     request_pool,
     telemetry: RunTelemetry | None = None,
 ) -> dict:
-    if shard_path.exists() and not args.overwrite:
+    manifest_path = shard_path.with_suffix(".native.json")
+    previous_manifest = None
+    if shard_path.exists():
+        if not manifest_path.exists():
+            raise ValueError(f"Legacy point shard has no native provenance; use a new output directory: {shard_path}")
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload = {key: value for key, value in previous_manifest.items() if key != "signature"}
+        if (previous_manifest.get("protocol") != NATIVE_PROTOCOL
+                or previous_manifest.get("signature") != manifest_signature(payload)):
+            raise ValueError(f"Native point manifest mismatch; use a new output directory: {shard_path}")
         existing = pd.read_parquet(shard_path)
         expected_ids = frame.sample_id.astype(str).tolist()
         if existing.sample_id.astype(str).tolist() != expected_ids:
             raise ValueError(f"Resume sample mismatch in {shard_path}")
-        missing = [name for name in columns if name not in existing.columns]
+        provenance = [f"aef{year}_source_{name}" for year in years for name in PROVENANCE_FIELDS]
+        missing = [name for name in [*columns, *provenance] if name not in existing.columns]
         if missing:
             raise ValueError(f"Resume schema mismatch in {shard_path}: {missing[:3]}")
-        complete = int(existing[columns].notna().all(axis=1).sum())
-        return {
-            "chunk": chunk_id,
-            "path": str(shard_path.resolve()),
-            "rows": len(existing),
-            "complete_rows": complete,
-            "status": "reused",
-        }
+        for year in years:
+            valid = existing[feature_columns([year])].notna().all(axis=1)
+            provenance = [f"aef{year}_source_{name}" for name in PROVENANCE_FIELDS]
+            if existing.loc[valid, provenance].isna().any().any():
+                raise ValueError(f"Native point provenance is incomplete in {shard_path}")
 
     remote = _request_chunk(
         ee,
@@ -264,7 +318,19 @@ def _complete_chunk(
         request_pool=request_pool,
         request_timeout_seconds=args.request_timeout_seconds,
         telemetry=telemetry,
+        metadata_only=previous_manifest is not None and not args.overwrite,
     )
+    manifest = remote.attrs["native_manifest"]
+    if previous_manifest is not None and previous_manifest != manifest:
+        raise ValueError(f"Native point sources changed; use a new output directory: {shard_path}")
+    if previous_manifest is not None and not args.overwrite:
+        return {
+            "chunk": chunk_id, "path": str(shard_path.resolve()),
+            "rows": len(existing),
+            "complete_rows": int(existing[columns].notna().all(axis=1).sum()),
+            "status": "reused", "sampling_protocol": NATIVE_PROTOCOL,
+            "native_source_signature": manifest["signature"],
+        }
     if telemetry is not None:
         telemetry.add_received_bytes(int(remote.memory_usage(index=True, deep=True).sum()))
     if "sample_id" not in remote:
@@ -280,14 +346,16 @@ def _complete_chunk(
         )
     base = frame.copy()
     base["sample_id"] = base.sample_id.astype(str)
-    overlap = set(columns).intersection(base.columns)
+    value_columns = [name for name in remote.columns if name != "sample_id"]
+    overlap = set(value_columns).intersection(base.columns)
     if overlap:
         raise ValueError(f"Input table already contains AEF columns: {sorted(overlap)[:3]}")
-    result = base.merge(remote[["sample_id", *columns]], on="sample_id", how="left", validate="one_to_one")
+    result = base.merge(remote, on="sample_id", how="left", validate="one_to_one")
     for year in years:
         annual = [name for name in columns if name.startswith(f"aef{year}_")]
         result[f"aef{year}_complete"] = result[annual].notna().all(axis=1)
     result["aef_complete_all_years"] = result[columns].notna().all(axis=1)
+    write_json(manifest, manifest_path)
     if telemetry is None:
         write_parquet(result, shard_path)
     else:
@@ -299,6 +367,8 @@ def _complete_chunk(
         "rows": len(result),
         "complete_rows": int(result.aef_complete_all_years.sum()),
         "status": "downloaded",
+        "sampling_protocol": NATIVE_PROTOCOL,
+        "native_source_signature": manifest["signature"],
     }
 
 
@@ -332,6 +402,13 @@ def main() -> None:
     layout = validate_storage_layout(final_out, state_root, args.staging_dir)
     state_root = Path(layout.state_root)
     staging_root = Path(layout.staging_root) if layout.staging_root else None
+    delivery_path = state_root / "delivery.json"
+    run_path = state_root / "run.json"
+    for path in (delivery_path, run_path):
+        if path.exists():
+            previous = json.loads(path.read_text(encoding="utf-8"))
+            if previous.get("sampling_protocol") != NATIVE_PROTOCOL:
+                raise ValueError("Legacy point sampling cannot be mixed with native UTM sampling; use a new output directory")
     source = PointSource.open(
         args.samples,
         layer=args.layer,
@@ -398,6 +475,7 @@ def main() -> None:
     validation.update(
         {
             "source": str(args.samples.resolve()),
+            "sampling_protocol": NATIVE_PROTOCOL,
             "output_directory": os.path.abspath(final_out),
             "working_directory": str(work_out.resolve()),
             "state_directory": str(state_root.resolve()),
@@ -422,29 +500,21 @@ def main() -> None:
         return
     source.assert_unchanged(validation["source_fingerprint"])
 
-    delivery_path = state_root / "delivery.json"
-    if delivery_path.exists() and not args.overwrite:
+    if delivery_path.exists():
         delivery = json.loads(delivery_path.read_text(encoding="utf-8"))
         if delivery.get("signature") != signature:
-            raise ValueError("Existing point delivery has a different signature")
-        if delivery.get("delivery_status") != "committed":
+            raise ValueError("Existing point delivery has a different signature; use a new output directory")
+        if args.overwrite or delivery.get("delivery_status") != "committed":
             delivery = None
     else:
         delivery = None
-    if delivery is not None:
-        report_path = state_root / "report.json"
-        if not report_path.exists():
-            raise FileNotFoundError("Completed delivery exists but its native report is missing")
-        print(report_path.read_text(encoding="utf-8"))
-        return
     shard_dir = work_out / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     columns = feature_columns(years)
-    run_path = state_root / "run.json"
-    if run_path.exists() and not args.overwrite:
+    if run_path.exists():
         previous = json.loads(run_path.read_text(encoding="utf-8"))
         if previous.get("signature") != signature:
-            raise ValueError("Existing output signature differs; use a new directory or --overwrite")
+            raise ValueError("Existing output signature differs; use a new output directory")
     try:
         ee, resolved_auth = initialize(
             args.project,
@@ -457,9 +527,29 @@ def main() -> None:
         emit_event("auth_required", error_type=type(exc).__name__, error=str(exc))
         raise
     emit_event("auth_ready", **resolved_auth.public_summary())
+    if delivery is not None:
+        report_path = state_root / "report.json"
+        if not report_path.exists():
+            raise FileNotFoundError("Completed delivery exists but its native report is missing")
+        checked = 0
+        for chunk_id, chunk in enumerate(source.iter_chunks(args.chunk_size), 1):
+            path = final_out / "shards" / f"part{chunk_id:05d}.parquet"
+            if not path.exists():
+                raise FileNotFoundError(f"Completed point delivery is missing {path}")
+            _complete_chunk(ee, chunk_id, chunk, years, columns, args, path, request_pool, telemetry)
+            checked += 1
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["native_metadata_revalidated_shards"] = checked
+        report["source_revalidated_at"] = datetime.now(timezone.utc).isoformat()
+        report["source_validation_telemetry"] = telemetry.report()
+        write_json(report, report_path)
+        print(json.dumps(report, indent=2))
+        emit_event("run_complete", workflow="points", completed=checked, total=checked)
+        return
     write_json(
         {
             "signature": signature,
+            "sampling_protocol": NATIVE_PROTOCOL,
             "dataset": DATASET,
             "authentication": resolved_auth.public_summary(),
             "years": years,
@@ -555,9 +645,11 @@ def main() -> None:
         write_parquet(catalog, work_out / "catalog.parquet")
     report = {
         "signature": signature,
+        "sampling_protocol": NATIVE_PROTOCOL,
         "sample_count": validation["rows"],
         "shards": len(catalog),
         "complete_rows": int(catalog.complete_rows.sum()),
+        "native_metadata_revalidated_shards": sum(record["status"] == "reused" for record in records),
         "incomplete_rows": int(validation["rows"] - catalog.complete_rows.sum()),
         "elapsed_seconds": time.perf_counter() - started,
         "catalog": str((state_root / "catalog.parquet").resolve()),
@@ -573,17 +665,20 @@ def main() -> None:
     if work_out == final_out:
         write_json(report, work_out / "report.json")
         write_json(
-            {"signature": signature, "delivery_status": "committed", "final_output": str(final_out)},
+            {"signature": signature, "sampling_protocol": NATIVE_PROTOCOL,
+             "delivery_status": "committed", "final_output": str(final_out)},
             state_root / "delivery.json",
         )
     else:
         write_json(
-            {"signature": signature, "workflow": "points", "complete_rows": report["complete_rows"]},
+            {"signature": signature, "sampling_protocol": NATIVE_PROTOCOL,
+             "workflow": "points", "complete_rows": report["complete_rows"]},
             work_out / "AEF_COMPLETE.json",
         )
         write_json(
             {
                 "signature": signature,
+                "sampling_protocol": NATIVE_PROTOCOL,
                 "delivery_status": "staging_complete",
                 "working_output": str(work_out),
                 "final_output": str(final_out),
@@ -603,6 +698,7 @@ def main() -> None:
         write_json(
             {
                 "signature": signature,
+                "sampling_protocol": NATIVE_PROTOCOL,
                 "delivery_status": "committed",
                 "working_output": str(work_out),
                 "final_output": str(final_out),

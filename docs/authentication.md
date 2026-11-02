@@ -46,7 +46,7 @@ aef-grits-auth login \
   --auth-mode localhost \
   --project YOUR_GEE_PROJECT
 
-aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT
+aef-grits-auth verify --source auto --project YOUR_GEE_PROJECT --check-aef
 ```
 
 For a remote shell, select `--auth-mode gcloud` or `notebook` deliberately.

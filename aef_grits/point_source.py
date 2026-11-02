@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .earth_engine import AEF_BANDS, AEF_FIRST_YEAR, AEF_LAST_YEAR
+from .native_grid import NATIVE_PROTOCOL, NativeSource
 from .points import TABLE_SUFFIXES, VECTOR_SUFFIXES, iter_vector_frame_points
 
 
@@ -409,6 +410,7 @@ def point_run_signature(
 ) -> str:
     payload = {
         "dataset": dataset,
+        "sampling_protocol": NATIVE_PROTOCOL,
         "years": sorted(set(int(year) for year in years)),
         "scale": float(scale),
         "tile_scale": int(tile_scale),
@@ -418,3 +420,25 @@ def point_run_signature(
     if content_sha256 is not None:
         payload["content_sha256"] = str(content_sha256)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def native_point_locations(frame: pd.DataFrame, source: NativeSource) -> pd.DataFrame:
+    """Locate containing source pixels and return their exact projected centres."""
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs("EPSG:4326", source.crs, always_xy=True)
+    x, y = transformer.transform(frame.lon.to_numpy(), frame.lat.to_numpy())
+    inverse = ~source.transform
+    columns = np.floor(inverse.a * x + inverse.b * y + inverse.c)
+    rows = np.floor(inverse.d * x + inverse.e * y + inverse.f)
+    inside = (np.isfinite(columns) & np.isfinite(rows)
+              & (columns >= 0) & (columns < source.width)
+              & (rows >= 0) & (rows < source.height))
+    columns = columns[inside].astype(np.int64)
+    rows = rows[inside].astype(np.int64)
+    centre_x, centre_y = source.transform * (columns + 0.5, rows + 0.5)
+    return pd.DataFrame({
+        "sample_id": frame.loc[inside, "sample_id"].astype(str).to_numpy(),
+        "column": columns, "row": rows,
+        "center_x": centre_x, "center_y": centre_y,
+    }, index=frame.index[inside])

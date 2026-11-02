@@ -57,6 +57,34 @@ def validate_delivery(payload: dict[str, Any]) -> dict[str, Any]:
                     "report": str(report_path),
                 }
             )
+    elif params.get("output_format") == "geotiff":
+        report_path = control_dir / "run_summary.json"
+        catalog_path = control_dir / "catalog.parquet"
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            catalog = pd.read_parquet(catalog_path)
+            expected_ids = set(params["grid_ids"])
+            manifest = json.loads((output_dir / "geotiff_manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("format") != "geotiff" or manifest.get("zarr_retained") is not False:
+                errors.append("Delivery is not TIFF-only")
+            if set(catalog.grid_id.astype(str)) != expected_ids or len(catalog) != len(expected_ids):
+                errors.append("GeoTIFF catalog grid IDs differ from the plan")
+            if not catalog.status.eq("complete").all() or not catalog.output_format.eq("geotiff").all():
+                errors.append("Not every GeoTIFF catalog row is complete")
+            if int(report.get("completed", -1)) != len(expected_ids) or report.get("failed") or report.get("geotiff_status") != "complete":
+                errors.append("GeoTIFF run summary is incomplete")
+            by_id = {row["grid_id"]: row for row in manifest["grids"]}
+            for row in catalog.itertuples(index=False):
+                grid = by_id[str(row.grid_id)]
+                if (row.crs != grid["crs"] or row.width != grid["width"] or row.height != grid["height"]
+                        or json.loads(row.transform) != grid["transform"]
+                        or json.loads(row.years) != sorted(params["years"])
+                        or json.loads(row.geotiff_paths) != [item["path"] for item in grid["files"]]):
+                    errors.append(f"GeoTIFF catalog metadata differs from manifest: {row.grid_id}")
+            summary.update(grid_count=len(expected_ids), grids=manifest["grids"],
+                           catalog=str(catalog_path), report=str(report_path))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            errors.append(f"Cannot validate TIFF-only delivery: {exc}")
     else:
         import xarray as xr
 
@@ -124,6 +152,10 @@ def validate_delivery(payload: dict[str, Any]) -> dict[str, Any]:
                     "report": str(report_path),
                 }
             )
+    if params.get("output_format") in {"zarr+geotiff", "geotiff"}:
+        from .geotiff import validate_geotiffs
+        errors.extend(validate_geotiffs(output_dir, params["grid_ids"], params["years"]))
+        summary["geotiff_manifest"] = str(output_dir / "geotiff_manifest.json")
     return {
         **summary,
         "valid": not errors,

@@ -1,5 +1,9 @@
 # AEF-GRiTS Web application
 
+> **Testing preview:** both the AEF download workflow and Web GUI downloads are
+> still under testing. Validate a small output before scaling up; this is not a
+> production-ready release.
+
 The application plans and runs the existing AEF-GRiTS point and dense-grid
 streaming commands. It supports a trusted localhost mode and an optional
 per-user OAuth mode for a campus server. It does not maintain a second download
@@ -39,6 +43,13 @@ Use the header link to switch views. Both views reuse the same authentication,
 preflight, signed plans, queue and CLI downloaders; this is not a second service.
 Only **AEF** is enabled. The disabled Tessera product is not downloadable; the
 Tessera 0.1° AEF storage grid remains available.
+
+P0 highlights the next connection action; successful verification collapses the
+settings. Changing Project invalidates access readiness. The anonymous source
+probe is under experimental sources and cannot start a download. For a first
+task, download the four-point CSV linked in P1, upload it and select 2025.
+Inspect Results and copy the output Path after the task finishes; a preparation
+percentage or successful preflight does not mean data has been downloaded.
 
 In `/portal`, press **检索 / 预检**, inspect the resolved grid IDs or point file,
 years, CRS and size estimate, then press **确认下载**. Planning alone creates no

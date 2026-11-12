@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 
@@ -12,14 +13,21 @@ from aef_grits import auth_cli
 from webapp import local_auth
 
 
+AUTH_URL = "https://accounts.google.com/o/oauth2/auth?" + urlencode({
+    "client_id": "test.apps.googleusercontent.com", "scope": "test-scope",
+    "redirect_uri": "http://localhost:8085", "response_type": "code",
+    "code_challenge": "test-challenge", "code_challenge_method": "S256",
+})
+
+
 @pytest.fixture
 def run_child(monkeypatch):
     original = subprocess.Popen
     calls = []
 
-    def configure(payload=None, *, delay=0, returncode=0, banner=""):
+    def configure(payload=None, *, delay=0, returncode=0, banner="", stream=""):
         code = (
-            f"import json,time; time.sleep({delay}); print({banner!r}); "
+            f"import json,time; print({stream!r}); time.sleep({delay}); print({banner!r}); "
             f"print(json.dumps({payload!r})); raise SystemExit({returncode})"
         )
 
@@ -79,6 +87,56 @@ def test_login_does_not_claim_project_verified(run_child):
     state = completed(runner)
     assert state["state"] == "done" and not state["verified"]
     assert calls[0][0][-3:] == ["--auth-mode", "localhost", "--force"]
+
+
+def test_login_streams_google_url_before_callback_and_clears_on_success(run_child):
+    calls = run_child({"ok": True}, delay=0.5, stream=AUTH_URL)
+    runner = local_auth.LocalAuthRunner()
+    runner.start("login")
+    deadline = time.monotonic() + 3
+    while not runner.status().get("authorization_url") and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runner.status()["state"] == "running"
+    assert runner.status()["authorization_url"] == AUTH_URL
+    assert calls[0][1]["PYTHONUNBUFFERED"] == "1"
+    assert "authorization_url" not in completed(runner)
+
+
+@pytest.mark.parametrize("url", [
+    "https://untrusted.example/login",
+    AUTH_URL.replace("accounts.google.com", "accounts.google.com.untrusted.example"),
+    AUTH_URL.replace("response_type=code", "response_type=token"),
+    AUTH_URL + "&access_token=not-for-the-ui",
+    AUTH_URL.replace("localhost", "untrusted.example"),
+])
+def test_login_never_exposes_non_authorization_output(run_child, url):
+    run_child({"ok": True}, delay=0.2, stream=url)
+    runner = local_auth.LocalAuthRunner()
+    runner.start("login")
+    deadline = time.monotonic() + 3
+    while runner.status()["state"] == "running" and time.monotonic() < deadline:
+        assert "authorization_url" not in runner.status()
+        time.sleep(0.01)
+    assert completed(runner)["state"] == "done"
+    assert "not-for-the-ui" not in json.dumps(runner.status())
+
+
+def test_cancel_removes_pending_authorization_url(run_child):
+    run_child({"ok": True}, delay=30, stream=AUTH_URL)
+    runner = local_auth.LocalAuthRunner()
+    runner.start("login")
+    try:
+        deadline = time.monotonic() + 3
+        while not runner.status().get("authorization_url") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert runner.status().get("authorization_url") == AUTH_URL
+        state = runner.cancel()
+        assert state["state"] == "cancelled"
+        assert "authorization_url" not in state
+        runner._process.wait(timeout=3)
+    finally:
+        if runner._process.poll() is None:
+            runner._process.kill()
 
 
 def test_verify_requires_aef_access(run_child):

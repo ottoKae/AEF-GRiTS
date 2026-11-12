@@ -4,20 +4,24 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT_SUFFIXES = {".html", ".js", ".json", ".md", ".py", ".toml", ".txt", ".yaml", ".yml"}
-SKIP_PARTS = {".git", ".pytest_cache", "__pycache__", "output", "outputs", "runs"}
 
 
-def _tracked_source_like_files():
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
-            continue
-        if any(part in SKIP_PARTS for part in path.relative_to(ROOT).parts):
-            continue
-        yield path
+def _publishable_source_like_files():
+    # Include pending public additions, but never scan ignored local credentials
+    # or private reports. Tracked files remain in scope even if later ignored.
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT, check=True, capture_output=True,
+    )
+    for relative in result.stdout.decode("utf-8").split("\0"):
+        path = ROOT / relative
+        if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES:
+            yield path
 
 
 def test_no_personal_gee_project_literal_is_committed():
@@ -25,7 +29,7 @@ def test_no_personal_gee_project_literal_is_committed():
     # gee-test fixtures. Personal gee-r<digits> deployment IDs are forbidden.
     pattern = re.compile(r"\bgee-r\d{6,}\b", re.IGNORECASE)
     findings = []
-    for path in _tracked_source_like_files():
+    for path in _publishable_source_like_files():
         text = path.read_text(encoding="utf-8", errors="replace")
         if pattern.search(text):
             findings.append(str(path.relative_to(ROOT)))

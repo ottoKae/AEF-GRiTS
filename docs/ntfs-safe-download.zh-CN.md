@@ -23,9 +23,9 @@ NTFS 有关的 D 状态进程后，程序拒绝启动新任务。
 ## 安全启动示例
 
 ```bash
-STATE=/home/duziwei/aef_state/anhui_mgrs_2019
-STAGE=/home/duziwei/aef_staging/anhui_mgrs_2019
-FINAL=/mnt/hdda/duziwei/anhui_mgrs_2019
+STATE=/home/USER/aef_state/anhui_mgrs_2019
+STAGE=/home/USER/aef_staging/anhui_mgrs_2019
+FINAL=/mnt/hdda/USER/anhui_mgrs_2019
 
 mkdir -p "$STATE" "$STAGE"
 
@@ -48,9 +48,9 @@ printf '%s\n' "$!" >"$STATE/download.pid"
 Web 服务使用：
 
 ```bash
-export AEF_GRITS_WEB_OUTPUT=/mnt/hdda/duziwei/aef_web_output
-export AEF_GRITS_WEB_STATE=/home/duziwei/aef_state/web
-export AEF_GRITS_WEB_STAGING=/home/duziwei/aef_staging/web
+export AEF_GRITS_WEB_OUTPUT=/mnt/hdda/USER/aef_web_output
+export AEF_GRITS_WEB_STATE=/home/USER/aef_state/web
+export AEF_GRITS_WEB_STAGING=/home/USER/aef_staging/web
 python webapp/app.py
 ```
 

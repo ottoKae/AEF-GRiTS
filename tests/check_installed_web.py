@@ -27,7 +27,7 @@ def main() -> None:
     checkout = Path(__file__).resolve().parents[1]
     assert not package.is_relative_to(checkout), f"Imported source instead of wheel: {package}"
     assert BUILTIN_MGRS_INDEX.is_file()
-    assets = ("index.html", "tokens.css", "base.css", "portal.css", "portal.js",
+    assets = ("index.html", "tokens.css", "base.css", "portal.css", "portal.js", "example-points.csv",
               "leaflet/leaflet.js", "leaflet/leaflet.css")
     for asset in assets:
         assert (package / "static" / asset).is_file(), asset

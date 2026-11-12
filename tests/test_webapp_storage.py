@@ -7,7 +7,7 @@ from playwright.sync_api import expect
 
 import webapp.app as web
 
-from test_webapp_e2e import browser_app
+from test_webapp_e2e import browser_app, _fill_project
 from test_webapp_polish import polish_page
 
 
@@ -33,7 +33,7 @@ def test_portal_plan_capacity_and_submission_do_not_repeat_in_sidebar(browser_ap
     page, tmp_path = browser_app
     page.click('#view-switch')
     page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     page.wait_for_function('authReady')
     samples = tmp_path / 'four.csv'
     samples.write_text('sample_id,lon,lat\np1,117.05,31.05\np2,117.06,31.05\n'
@@ -84,7 +84,8 @@ def test_missing_credentials_guides_explicit_google_authorization(browser_app):
     page.on('request', lambda request: starts.append(request.url)
             if request.url.endswith('/api/local-auth/start') else None)
     page.evaluate('refreshLocalAuth()')
-    expect(page.locator('#local-auth-result')).to_contain_text('未找到本机凭据')
+    expect(page.locator('#local-auth-result')).to_contain_text('未找到凭据')
+    expect(page.locator('#local-auth-next')).to_have_text('前往 Google 授权')
     expect(page.locator('#simple-btn-submit')).to_be_disabled()
     assert starts == []  # Discovery must not launch Google consent automatically.
 

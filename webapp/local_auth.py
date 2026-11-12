@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from aef_grits.auth import project_fingerprint
 from aef_grits.redaction import redact_text
@@ -50,7 +51,7 @@ class LocalAuthRunner:
             command.append("--json")
         if action == "verify":
             command.append("--check-aef")
-        environment = dict(os.environ, PYTHONIOENCODING="utf-8")
+        environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         if project:
             # Project configuration stays out of the process command line and UI logs.
             environment["AEF_GRITS_PROJECT"] = project
@@ -64,7 +65,8 @@ class LocalAuthRunner:
             }
             try:
                 self._process = subprocess.Popen(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    command, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL if action == "login" else subprocess.PIPE,
                     stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
                     env=environment, start_new_session=os.name == "posix",
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -95,13 +97,24 @@ class LocalAuthRunner:
             if self._state["state"] != "running" or process is None:
                 return dict(self._state)
             self._state.update(state="cancelled", verified=False)
+            self._state.pop("authorization_url", None)
         terminate_process_group_once(process)
         return self.status()
 
     def _finish(self, process: subprocess.Popen[str], action: str, project: str) -> None:
         result: dict[str, Any]
         try:
-            stdout, _ = process.communicate(timeout=_TIMEOUTS[action])
+            if action == "login":
+                output: list[str] = []
+                reader = threading.Thread(
+                    target=self._read_login_output, args=(process, output), daemon=True,
+                )
+                reader.start()
+                process.wait(timeout=_TIMEOUTS[action])
+                reader.join(timeout=1)
+                stdout = "".join(output)
+            else:
+                stdout, _ = process.communicate(timeout=_TIMEOUTS[action])
             # Authentication libraries can print notices before the final CLI JSON.
             decoder = json.JSONDecoder()
             payload = None
@@ -155,4 +168,41 @@ class LocalAuthRunner:
             result = {"state": "error", "error": "Could not read the authentication result"}
         with self._lock:
             if self._process is process and self._state["state"] == "running":
+                self._state.pop("authorization_url", None)
                 self._state.update(result)
+
+    def _read_login_output(self, process: subprocess.Popen[str], output: list[str]) -> None:
+        # EE prints the fallback URL before waiting for its localhost callback.
+        assert process.stdout is not None
+        with process.stdout:
+            for line in process.stdout:
+                output.append(line)
+                url = _google_authorization_url(line.strip())
+                if url:
+                    with self._lock:
+                        if self._process is process and self._state["state"] == "running":
+                            self._state["authorization_url"] = url
+
+
+def _google_authorization_url(value: str) -> str | None:
+    """Expose only Google's PKCE login URL, never arbitrary provider output."""
+    try:
+        url = urlsplit(value)
+        if (url.scheme != "https" or url.netloc != "accounts.google.com"
+                or url.path not in {"/o/oauth2/auth", "/o/oauth2/v2/auth"} or url.fragment):
+            return None
+        query = parse_qs(url.query)
+        allowed = {"client_id", "scope", "redirect_uri", "response_type",
+                   "code_challenge", "code_challenge_method", "state"}
+        if not set(query).issubset(allowed) or any(len(values) != 1 for values in query.values()):
+            return None
+        if query.get("response_type") != ["code"] or query.get("code_challenge_method") != ["S256"]:
+            return None
+        if not query.get("client_id") or not query.get("scope") or not query.get("code_challenge"):
+            return None
+        callback = urlsplit(query.get("redirect_uri", [""])[0])
+        if callback.scheme != "http" or callback.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return None
+    except ValueError:
+        return None
+    return value

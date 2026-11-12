@@ -794,6 +794,9 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 
         <div class="step-card step-connection">
           <div class="step-title"><span class="step-number">P0</span>数据源与连接</div>
+          <p class="input-help" id="testing-notice">测试阶段：AEF 下载流程与 Web GUI 下载仍在测试中，请先用小任务核对结果。</p>
+          <details class="help-details" id="source-experiments">
+            <summary>实验数据源（尚不支持下载）</summary>
           <div class="field">
             <label for="data-source">数据源</label>
             <select id="data-source" onchange="changeDataSource()">
@@ -806,6 +809,9 @@ input:disabled { opacity: .5; cursor: not-allowed; }
             <button class="btn-aoi" type="button" id="public-source-probe" onclick="probePublicSource()">检查匿名数据源</button>
             <p id="public-source-result" class="input-help" role="status"></p>
           </div>
+          </details>
+          <details class="help-details" id="connection-settings" open>
+            <summary>连接设置</summary>
           <div class="field" id="project-field">
             <label for="project">Earth Engine Project ID</label>
             <input type="text" id="project" placeholder="例如：my-earthengine-project" autocomplete="off">
@@ -814,18 +820,26 @@ input:disabled { opacity: .5; cursor: not-allowed; }
           <details class="help-details">
             <summary>Project ID 与授权说明</summary>
             <p>填写 Cloud Project ID，不是项目名称、邮箱或密码。该项目需注册 Earth Engine 并启用 API，您的 Google 账号需有访问权限。</p>
+            <p>还没有项目？先按 <a href="https://developers.google.com/earth-engine/guides/access" target="_blank" rel="noopener noreferrer">Google 官方指引</a>创建或注册项目，再把 Project ID 填到这里。</p>
             <p>本机模式使用您的 EE/ADC 凭据。已有凭据可直接验证；需要登录时，点击 Google 授权，在 Google 官方页面完成操作。找到凭据不等于能访问数据，下载前仍需验证连接。</p>
             <p>授权凭据由 Earth Engine 保存在当前用户的 .config/earthengine/credentials，不是 netrc，也不保存您的 Google 密码。授权后点击“验证连接”。</p>
+          </details>
+          <details class="help-details" id="local-auth-settings" hidden>
+            <summary>重新检测或更换授权</summary>
+          <div class="aoi-btns">
+            <button class="btn-aoi" type="button" onclick="startLocalAuth('status')">重新检测凭据</button>
+            <button class="btn-aoi" type="button" onclick="startLocalAuth('login', true)">重新授权 / 更换账号</button>
+          </div>
+          </details>
           </details>
           <button class="btn-aoi" id="auth-step-login" type="button" hidden onclick="document.getElementById('auth-login').click()">前往Google登录授权</button>
           <div id="local-auth-controls" hidden>
             <div class="aoi-btns">
-              <button class="btn-aoi" type="button" onclick="startLocalAuth('status')">检测凭据</button>
-              <button class="btn-aoi" type="button" onclick="startLocalAuth('login')">Google 授权</button>
-              <button class="btn-aoi" type="button" onclick="startLocalAuth('verify')">验证连接</button>
+              <button class="btn-aoi" type="button" id="local-auth-next" onclick="startLocalAuth(this.dataset.action)" data-action="status">检查本机凭据</button>
               <button class="btn-aoi" type="button" id="local-auth-cancel" hidden onclick="cancelLocalAuth()">取消等待</button>
             </div>
             <p id="local-auth-result" class="input-help" role="status">下载前请验证连接。</p>
+            <a id="local-auth-link" class="input-help" hidden target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">未自动打开？点击前往 Google 授权</a>
           </div>
         </div>
 
@@ -836,6 +850,7 @@ input:disabled { opacity: .5; cursor: not-allowed; }
             <button class="wf-tab" id="simple-wf-grid" onclick="setWorkflow('grid')"><span>格网</span></button>
           </div>
         <div id="simple-point-options" class="location-options">
+          <p class="input-help">首次试用：<a href="/static/example-points.csv" download>下载四点 CSV 示例</a>，上传后选择 2025 年。</p>
           <div class="workflow-tabs">
             <button class="wf-tab active" id="point-source-csv" onclick="setPointSourceType('csv')">CSV</button>
             <button class="wf-tab" id="point-source-shp" onclick="setPointSourceType('shp')">Shapefile</button>
@@ -2384,6 +2399,7 @@ async function loadAuthStatus() {
       document.getElementById('auth-help').textContent = '凭据不上传官网；无需在此填写 Google 密码。';
       document.getElementById('auth-step-login').hidden = true;
       document.getElementById('local-auth-controls').hidden = false;
+      document.getElementById('local-auth-settings').hidden = false;
       state.textContent = '本机连接待验证';
       login.style.display = 'none';
       logout.style.display = 'none';
@@ -2413,6 +2429,7 @@ function changeDataSource() {
   document.getElementById('public-source-controls').hidden = !isPublic;
   document.getElementById('project-field').hidden = isPublic;
   document.getElementById('local-auth-controls').hidden = isPublic || webAuthMode !== 'local';
+  document.getElementById('local-auth-settings').hidden = isPublic || webAuthMode !== 'local';
   if (isPublic) {
     authReady = false;
     document.getElementById('auth-state').textContent = '公开源仅可检查连接，GUI提取尚未开放';
@@ -2427,11 +2444,30 @@ async function refreshLocalAuth() {
   if (!response.ok) throw new Error('无法读取本机认证状态');
   const data = await response.json();
   if (project !== document.getElementById('project').value.trim()) return;
+  const wasVerified = authReady;
   authReady = Boolean(data.verified) && document.getElementById('data-source').value === 'gee';
+  const next = document.getElementById('local-auth-next');
+  const authorizationLink = document.getElementById('local-auth-link');
+  authorizationLink.hidden = !(data.state === 'running' && data.action === 'login' && data.authorization_url);
+  if (authorizationLink.hidden) authorizationLink.removeAttribute('href');
+  else authorizationLink.href = data.authorization_url;
+  const missingCredentials = data.candidates && !data.candidates.some(c => c.available);
+  const action = data.state === 'error' || data.state === 'cancelled'
+    ? data.action || 'status'
+    : missingCredentials ? 'login'
+    : data.candidates || data.action === 'login' || data.action === 'verify' ? 'verify' : 'status';
+  next.dataset.action = action;
+  next.textContent = {status:'检查本机凭据', login:'前往 Google 授权', verify:project ? '验证连接' : '先填写 Project ID'}[action];
+  next.hidden = authReady || data.state === 'running';
+  next.disabled = action === 'verify' && !project;
+  document.querySelectorAll('#local-auth-settings button').forEach(button => { button.disabled = data.state === 'running'; });
+  const settings = document.getElementById('connection-settings');
+  if (authReady && !wasVerified) settings.open = false;
+  else if (!authReady) settings.open = true;
   const text = data.state === 'running' ? '正在' + ({login:'等待Google授权',verify:'验证Project与AEF',status:'检测凭据'}[data.action] || '处理认证') + '…'
     : data.error || (authReady ? 'Project与AEF访问已验证' : data.action === 'login' && data.state === 'done'
-      ? '授权已保存到本机，请点击“验证连接”' : data.candidates
-      ? (data.candidates.some(c => c.available) ? '已找到本机凭据，请验证连接。' : '未找到本机凭据，请点击“Google 授权”。')
+      ? '授权已保存；填写 Project 后验证 AEF 访问。' : data.candidates
+      ? (data.candidates.some(c => c.available) ? '已找到凭据；填写 Project 后验证 AEF 访问。' : '未找到凭据，请前往 Google 授权。')
       : data.state === 'cancelled' ? '已取消认证等待' : '本机连接待验证');
   document.getElementById('local-auth-result').textContent = text;
   if (document.getElementById('data-source').value === 'gee') document.getElementById('auth-state').textContent = text;
@@ -2443,16 +2479,32 @@ async function refreshLocalAuth() {
 
 function showLocalAuthError(error) {
   authReady = false;
+  const next = document.getElementById('local-auth-next');
+  next.hidden = false;
+  next.disabled = false;
+  next.dataset.action = 'refresh';
+  next.textContent = '重新检查连接';
+  document.getElementById('connection-settings').open = true;
+  clearTimeout(localAuthTimer);
+  const authorizationLink = document.getElementById('local-auth-link');
+  authorizationLink.hidden = true;
+  authorizationLink.removeAttribute('href');
   document.getElementById('local-auth-result').textContent = error.message;
   document.getElementById('auth-state').textContent = error.message;
   validateForm();
 }
 
-async function startLocalAuth(action) {
+async function startLocalAuth(action, force = false) {
   try {
-    if (action === 'login') document.dispatchEvent(new Event('aef:auth-change'));
+    if (action === 'refresh') {
+      await refreshLocalAuth();
+      return;
+    }
+    authReady = false;
+    validateForm();
+    document.dispatchEvent(new Event('aef:auth-change'));
     const response = await fetch('/api/local-auth/start', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action, project:document.getElementById('project').value.trim()})});
+      body:JSON.stringify({action, force, project:document.getElementById('project').value.trim()})});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '无法启动认证');
     await refreshLocalAuth();

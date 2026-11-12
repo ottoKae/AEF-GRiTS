@@ -61,6 +61,90 @@ def _accept_next_dialog(page):
     page.once("dialog", lambda dialog: dialog.accept())
 
 
+def _fill_project(page, value):
+    settings = page.locator('#connection-settings')
+    if not settings.evaluate('el => el.open'):
+        settings.locator(':scope > summary').click()
+    page.fill('#project', value)
+
+
+def test_local_connection_guides_next_action_without_automatic_login(browser_app, monkeypatch):
+    page, _ = browser_app
+    state = {'state': 'idle'}
+    calls = []
+    options = []
+    monkeypatch.setattr(web._local_auth, 'status', lambda: dict(state))
+    monkeypatch.setattr(web._local_auth, 'is_verified',
+                        lambda project, source='auto': state.get('verified', False) and project == 'gee-test')
+
+    def start(action, **kwargs):
+        calls.append(action)
+        options.append(kwargs)
+        state.clear()
+        state.update(state='running', action=action)
+        return dict(state)
+
+    monkeypatch.setattr(web._local_auth, 'start', start)
+    page.evaluate('refreshLocalAuth()')
+    button = page.locator('#local-auth-next')
+    playwright.expect(button).to_have_text('检查本机凭据')
+    assert calls == []
+    button.click()
+    playwright.expect(page.locator('#local-auth-cancel')).to_be_visible()
+    assert calls == ['status']
+
+    state.update(state='done', candidates=[{'source': 'earthengine', 'available': False}])
+    page.evaluate('refreshLocalAuth()')
+    playwright.expect(button).to_have_text('前往 Google 授权')
+    assert calls == ['status']  # Finding no credential must not open Google.
+    with page.expect_response('**/api/local-auth/start'):
+        button.click()
+    assert calls == ['status', 'login']
+    assert options[-1]['force'] is False
+    authorization_url = 'https://accounts.google.com/o/oauth2/auth?client_id=test'
+    state.update(authorization_url=authorization_url)
+    page.evaluate('refreshLocalAuth()')
+    link = page.locator('#local-auth-link')
+    playwright.expect(link).to_be_visible()
+    assert link.get_attribute('href') == authorization_url
+    page.route('**/api/local-auth/status', lambda route: route.fulfill(status=503))
+    page.evaluate('refreshLocalAuth().catch(showLocalAuthError)')
+    playwright.expect(link).to_be_hidden()
+    playwright.expect(button).to_have_text('重新检查连接')
+    page.unroute('**/api/local-auth/status')
+    button.click()
+    playwright.expect(link).to_be_visible()
+    assert calls == ['status', 'login']  # Recover polling without starting another login.
+    state.update(state='done')
+    _fill_project(page, '')
+    page.evaluate('refreshLocalAuth()')
+    playwright.expect(button).to_be_disabled()
+    playwright.expect(link).to_be_hidden()
+    assert link.get_attribute('href') is None
+    assert not page.evaluate('authReady')
+    _fill_project(page, 'gee-test')
+    page.evaluate('refreshLocalAuth()')
+    playwright.expect(button).to_have_text('验证连接')
+    with page.expect_response('**/api/local-auth/start'):
+        button.click()
+    state.update(state='error', error='Network timeout; retry verification')
+    page.evaluate('refreshLocalAuth()')
+    playwright.expect(button).to_have_text('验证连接')
+    assert not page.evaluate('authReady')
+    state.update(state='done', verified=True, error='')
+    page.evaluate('refreshLocalAuth()')
+    playwright.expect(button).to_be_hidden()
+    assert not page.locator('#connection-settings').evaluate('el => el.open')
+    _fill_project(page, 'changed-project')
+    page.wait_for_function('!authReady')
+    playwright.expect(button).to_be_visible()
+    assert page.locator('#simple-btn-submit').is_disabled()
+    page.locator('#local-auth-settings > summary').click()
+    with page.expect_response('**/api/local-auth/start'):
+        page.get_by_role('button', name='重新授权 / 更换账号', exact=True).click()
+    assert calls[-1] == 'login' and options[-1]['force'] is True
+
+
 def test_tessera_browser_plan_and_submit(browser_app):
     page, tmp_path = browser_app
     aoi = tmp_path / "aoi.wkt"
@@ -198,7 +282,7 @@ def test_portal_preview_export_invalidation_and_confirm(browser_app):
     page.click('#view-switch')
     page.wait_for_url('**/portal')
     page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     samples = tmp_path / 'portal.csv'
     samples.write_text('sample_id,lon,lat\np1,117.05,31.05\n', encoding='utf-8')
     page.set_input_files('#simple-point-files', str(samples))
@@ -212,7 +296,7 @@ def test_portal_preview_export_invalidation_and_confirm(browser_app):
     content = json.loads(Path(exported.value.path()).read_text(encoding='utf-8'))
     assert content['product'] == 'AEF' and content['rows'] == 1
     assert 'plan_id' not in content and 'project' not in content
-    page.fill('#project', 'gee-test-changed')
+    _fill_project(page, 'gee-test-changed')
     assert page.locator('#portal-download').is_disabled()
     assert '条件已改变' in page.locator('#portal-plan-state').inner_text()
     page.click('#portal-preview')
@@ -232,7 +316,7 @@ def test_portal_grid_plan_and_product_selection(browser_app):
     page, tmp_path = browser_app
     page.click('#view-switch')
     page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     page.wait_for_function('authReady')
     aoi = tmp_path / 'portal.wkt'
     aoi.write_text('POLYGON ((117.01 31.01, 117.09 31.01, 117.09 31.09, 117.01 31.09, 117.01 31.01))', encoding='utf-8')
@@ -281,7 +365,7 @@ def test_portal_task_rate_filter_and_mobile_layout(browser_app):
 def test_preparation_progress_and_real_preflight_activity(browser_app):
     page, tmp_path = browser_app
     page.wait_for_function('authReady')
-    page.fill('#project', '')
+    _fill_project(page, '')
     page.click('#simple-year-tags .year-tag.active')
     assert page.locator('#preparation-progress').get_attribute('value') == '25'
     assert '请填写Earth Engine Project' in page.locator('#preparation-hint').inner_text()
@@ -291,7 +375,7 @@ def test_preparation_progress_and_real_preflight_activity(browser_app):
     samples.write_text('sample_id,lon,lat\np1,117.05,31.05\n', encoding='utf-8')
     page.set_input_files('#simple-point-files', str(samples))
     assert page.locator('#preparation-progress').get_attribute('value') == '50'
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     page.wait_for_function('authReady')
     assert page.locator('#preparation-progress').get_attribute('value') == '75'
     page.click('#simple-year-tags [data-year="2025"]')
@@ -343,9 +427,9 @@ def test_preparation_card_layout_and_actionable_hint(browser_app, portal):
     if portal:
         page.click('#view-switch')
         page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-        page.fill('#project', 'gee-test')
+        _fill_project(page, 'gee-test')
     page.wait_for_function('typeof authReady !== "undefined" && authReady')
-    page.fill('#project', '')
+    _fill_project(page, '')
     assert page.locator('#preparation-percent').inner_text() == '50%'
     assert page.locator('#preparation-count').inner_text() == '已就绪 2 / 4 项'
     assert page.locator('#preparation-hint').inner_text() == '请填写Earth Engine Project；请选择点位文件。'
@@ -363,6 +447,7 @@ def test_preparation_card_layout_and_actionable_hint(browser_app, portal):
 def test_map_points_use_existing_csv_preflight_and_submission(browser_app):
     page, _ = browser_app
     assert '数据源与连接' in page.locator('#sidebar-scroll .step-title').first.inner_text()
+    page.locator('#connection-settings > summary').click()
     assert '凭据不上传官网' in page.locator('#auth-help').inner_text()
     page.click('#point-source-map')
     page.evaluate('map.setView([31.05,117.05], 10)')
@@ -388,7 +473,7 @@ def test_map_grid_selection_controls_signed_download_plan(browser_app):
     page, tmp_path = browser_app
     page.click('#view-switch')
     page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     page.wait_for_function('authReady')
     page.click('#simple-wf-grid')
     page.click('#scheme-tessera')
@@ -422,7 +507,7 @@ def test_geotiff_choice_and_public_source_disabled_in_gui(browser_app, output_fo
     page, tmp_path = browser_app
     page.click('#view-switch')
     page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     page.click('#simple-wf-grid')
     page.click('#scheme-tessera')
     page.select_option('#output-format', output_format)
@@ -438,6 +523,7 @@ def test_geotiff_choice_and_public_source_disabled_in_gui(browser_app, output_fo
     page.wait_for_selector('#portal-task-rows .task-status.queued')
     task = next(iter(web._tasks.values()))
     assert flag in task['command']
+    page.locator('#source-experiments > summary').click()
     page.select_option('#data-source', 'public')
     assert page.locator('#portal-preview').is_disabled()
     assert page.locator('#public-source-controls').is_visible()
@@ -453,7 +539,7 @@ def test_native_folder_plan_change_cancel_and_submit(browser_app, monkeypatch):
     monkeypatch.setattr(web, 'pick_directory', lambda initial: str(chosen))
     page.click('#view-switch')
     page.wait_for_function("typeof webAuthMode !== 'undefined' && webAuthMode === 'local'")
-    page.fill('#project', 'gee-test')
+    _fill_project(page, 'gee-test')
     page.wait_for_function('authReady')
     samples = tmp_path / 'native.csv'
     samples.write_text('sample_id,lon,lat\np1,117.05,31.05\n', encoding='utf-8')

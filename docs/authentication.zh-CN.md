@@ -16,6 +16,10 @@ AEF-GRiTS采用一条固定原则：**下载任务只复用已经存在的凭据
 Earth Engine API的Project。Project ID不是OAuth密钥，但属于部署信息，仓库、
 公共任务接口和日志均不写入具体默认值。
 
+还没有Project时，先按[Google的Earth Engine开通指南](https://developers.google.com/earth-engine/guides/access)
+创建或注册项目，并确认自己的账号有使用权限。填写的是**Project ID**，不是显示名称或邮箱。
+Google授权确认“您是谁”；Project和AEF访问验证确认“能否通过这个项目下载”。
+
 ## CLI凭据自动发现
 
 下载命令支持`--auth-source auto|earthengine|adc`和可选的`--project`。
@@ -71,8 +75,13 @@ aef-grits-auth verify --source adc --project YOUR_GEE_PROJECT
 安装后运行`aef-grits-web`，或`python -m webapp.launcher`。界面在localhost运行；
 公开安装/帮助网站不保管用户凭据，也不调度用户的下载任务。
 
-P0依次提供“检测凭据”“本机 Google 授权”“验证 Project 与 AEF”。登录按钮主动调用
+P0按当前状态突出一个下一步：检查凭据、必要时Google授权、验证连接。
+验证通过后收起连接设置；更改Project后需要重新验证。重新检测与更换授权放在折叠设置内。
+打开网页或检测不到凭据都不会自动登录。登录按钮主动调用
 现有CLI的Earth Engine localhost认证流程；用户只在Google官方页面授权，不在GUI输入密码。
+浏览器没有自动打开时，可在等待登录期间点击工作台显示的授权链接，并保持本机工具运行，
+等待Google回到localhost回调页面。不要分享该临时链接。主动重新授权会重新进入Google授权，
+而不是直接复用现有Earth Engine凭据；完成后仍需验证连接。
 `verify --check-aef`会额外做一个小型集合访问请求。“找到凭据文件”或浏览器已登录Google，
 都不等于当前Python已获准使用所选Project。
 

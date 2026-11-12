@@ -1,5 +1,9 @@
 # AEF-GRiTS installation website
 
+The AEF download workflow and Web GUI downloads are still in testing. The
+homepage must retain this notice; publication of the website is not production
+certification of the downloader.
+
 Buildless, Chinese-first landing page for the **locally running Python downloader**.
 This directory is not the downloader UI and has no application server, login,
 upload endpoint, analytics, external fonts or JavaScript dependencies.
@@ -43,9 +47,20 @@ Link to `index.html#install` for the guided setup:
    `http://127.0.0.1:5555/portal` in a new tab for an **already running** workbench.
    If another port was selected, use the URL printed by the launcher instead.
 
+First-time GEE users are directed to Google's
+[Project setup guide](https://developers.google.com/earth-engine/guides/access).
+Google authorization and a usable Earth Engine Project are separate requirements.
+If the login browser does not open automatically, the local workbench supplies the
+authorization link while the login is waiting; no credentials pass through this site.
+To update, finish/cancel downloads and stop the old service, then install from the
+newly extracted source directory before launching. Replacing source files alone
+does not update a previously installed Python package.
+
 This static site retains a visible development-release notice until the current
-GUI has a tested, published installation package. The Releases link is an index,
-not a claim that the current local GUI is already available there.
+GUI has a tested, published installation package. No main/branch ZIP or Releases
+index is offered as a substitute for that artifact. Before publication, pin the
+download link to the accepted full commit SHA (source ZIP) and test that exact
+archive; this working tree is not yet a published preview.
 
 Browser regression coverage is in `tests/test_website_first_run.py`; it checks
 real clipboard copying, fallback selection, no unsolicited network requests,

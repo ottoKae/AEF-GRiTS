@@ -7,10 +7,18 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .venv/
+.test-tmp/
 
 # Credentials and local configuration
 .env
+.env.*
+!.env.example
 credentials
+credentials.json
+application_default_credentials.json
+client_secret*.json
+.plan_secret
+.session_secret
 *.key
 *.pem
 
@@ -20,6 +28,7 @@ data/
 !aef_grits/data/README.md
 outputs/
 *.csv
+!/webapp/static/example-points.csv
 *.parquet
 !aef_grits/data/mgrs.parquet
 *.tif
@@ -42,6 +51,33 @@ outputs/
 webapp/runs/
 webapp/output/
 webapp/server.pid
+
+# Local acceptance evidence; retain only the reusable instructions and AOI.
+/webapp/acceptance/*
+!/webapp/acceptance/README.md
+!/webapp/acceptance/anhui_small_aoi.geojson
+/tooling/diagnostics/**/*.xml
+/.hallmark/
+
+# Private development plans and machine-specific validation records.
+/docs/code-plan-download-hardening-20260815.md
+/docs/local-web-gui-execution-plan-20261030.zh-CN.md
+/docs/map-browser-execution-plan-20261101.zh-CN.md
+/docs/public-gui-plan-20261030.zh-CN.md
+/docs/ntfs3-incident-20260815.md
+/docs/download-hardening-validation-20260816.md
+/docs/linux-download-validation-20260815.md
+/docs/resource-bounded-validation-20260815.md
+/docs/first-use-validation-20261104.zh-CN.md
+/docs/web-onboarding-acceptance-20261102.zh-CN.md
+/docs/web-onboarding-optimization-plan-20261102.zh-CN.md
+/tooling/diagnostics/20260923_nan_strategy/
+/tooling/diagnostics/20260923_wuhan2024_coverage/
+/tooling/diagnostics/first_run_20261104/
+/tooling/diagnostics/onboarding_20261102/
+/tooling/diagnostics/source_auth_20261030/
+/tooling/diagnostics/gui_live_20261030/check_rejections.py
+/tooling/diagnostics/gui_live_20261030/run_gui.py
 
 # IDE and OS
 .idea/

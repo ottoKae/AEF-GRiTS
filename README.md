@@ -1,5 +1,9 @@
 # AEF-GRiTS
 
+> **Testing preview:** the AEF download workflow and Web GUI downloads are still
+> under testing, not a production-ready release. Start with a small task and
+> verify the output before downloading at scale.
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 > **GUI development branch:** `feature/web-workbench` keeps the unfinished
@@ -212,7 +216,10 @@ aef-grits-web --output-root /your/data/aef --no-browser
 The four steps are **P0 connection → P1 points/grid → P2 years/query → P3 local
 output/download**. In P0, explicitly detect credentials, authorize locally when
 needed, and verify your Project and AEF access. Finding a credential is not proof
-of access. The four preparation checks contribute 25% each; that is not download
+of access. The next-action button follows this sequence; verified settings fold
+away and changing Project requires verification again. A four-point CSV is linked
+in the workbench for a first 2025 task. Results/path actions locate the actual files.
+The four preparation checks contribute 25% each; that is not download
 progress. Preflight and confirmation still precede execution.
 
 The new workspace at `http://127.0.0.1:5555/portal` adds product selection,

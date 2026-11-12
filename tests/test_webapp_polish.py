@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from test_webapp_e2e import browser_app
+from test_webapp_e2e import browser_app, _fill_project
 from playwright.sync_api import expect
 
 import webapp.app as web
@@ -19,9 +19,11 @@ def polish_page(browser_app, request):
         page.click("#view-switch")
         page.wait_for_url("**/portal")
     page.wait_for_function("webAuthMode === 'local'")
-    page.fill("#project", "gee-test")
+    _fill_project(page, "gee-test")
     page.dispatch_event("#project", "input")
     page.wait_for_function("authReady")
+    if not page.locator('#connection-settings').evaluate('el => el.open'):
+        page.locator('#connection-settings > summary').click()
     return page, tmp_path, request.param
 
 
@@ -311,12 +313,12 @@ def test_light_workbench_sections_and_collapsible_help(polish_page):
                for card, header in zip(surfaces, headers))
 
     page.click("#simple-wf-grid")
-    helps = page.locator(".step-card details.help-details")
-    expect(helps).to_have_count(4)
+    helps = page.locator(".step-card details.help-details:not(#connection-settings)")
+    expect(helps).to_have_count(6)
     assert helps.evaluate_all("els => els.every(el => !el.open)")
     for details in helps.all():
         summary = details.locator(":scope > summary")
-        content = details.locator("p, button").first
+        content = details.locator("select, p, button").first
         assert summary.inner_text().strip() and content.text_content().strip()
         expect(content).to_be_hidden()
         summary.focus()
@@ -327,7 +329,8 @@ def test_light_workbench_sections_and_collapsible_help(polish_page):
         summary.press("Space")
         expect(content).to_be_hidden()
     expect(page.locator("#output-folder-status")).to_be_hidden()
-    for selector in ("#auth-help", "#local-auth-result", "#output-root-hint", "#preparation-hint"):
+    assert page.locator('#auth-help').evaluate("el => el.closest('details').id === 'connection-settings'")
+    for selector in ("#local-auth-result", "#output-root-hint", "#preparation-hint"):
         expect(page.locator(selector)).to_be_visible()
         assert page.locator(selector).evaluate("el => !el.closest('details')")
     for width in (1600, 390):

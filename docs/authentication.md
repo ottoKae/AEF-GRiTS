@@ -18,6 +18,12 @@ a Project they can use and on which the Earth Engine API is enabled. Project
 IDs are deployment metadata, not OAuth secrets, but AEF-GRiTS does not embed
 them in source code, public task data, or logs.
 
+If you do not yet have a Project, follow Google's
+[Earth Engine access guide](https://developers.google.com/earth-engine/guides/access)
+to create or register one and arrange account permissions. Use the **Project ID**,
+not its display name or your email address. Google authorization establishes your
+identity; successful Project and AEF verification establishes download access.
+
 ## CLI credential discovery
 
 All download commands accept `--auth-source auto|earthengine|adc` and an
@@ -76,9 +82,17 @@ Start `aef-grits-web` (or `python -m webapp.launcher`) after installing the
 package. The GUI runs on localhost; a public installation/help website does not
 hold your credentials or operate your download jobs.
 
-P0 has separate actions: detect credentials, authorize on this computer, then
-verify the Project and AEF collection. The login button explicitly invokes the
+P0 highlights one next action: detect credentials, authorize if missing, then
+verify the Project and AEF collection. Successful settings collapse; reopen
+Connection settings to change Project or explicitly authorize again. No login
+starts merely by opening the page or discovering a missing credential.
+The login button explicitly invokes the
 existing CLI's Earth Engine localhost flow; no password is entered in this GUI.
+If the browser does not open, use the authorization link shown by the workbench
+while login is waiting. Keep the local tool running until Google returns to its
+localhost callback. Do not share that temporary link. Explicitly authorizing again
+starts a fresh Google authorization rather than silently reusing the existing
+Earth Engine credential; verify the connection afterwards.
 The optional `verify --check-aef` performs a small collection-access request.
 Finding a credential file or already being signed into Google is not proof that
 this Python process can use the selected Project.

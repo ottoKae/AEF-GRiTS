@@ -78,7 +78,7 @@ include-package-data = false
 
 [tool.setuptools.package-data]
 "aef_grits" = ["data/*.parquet", "data/*.md"]
-"webapp" = ["static/*.html", "static/*.css", "static/*.js", "static/leaflet/*.css", "static/leaflet/*.js", "static/leaflet/images/*.png"]
+"webapp" = ["static/*.html", "static/*.css", "static/*.js", "static/example-points.csv", "static/leaflet/*.css", "static/leaflet/*.js", "static/leaflet/images/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
